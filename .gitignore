@@ -1,0 +1,19 @@
+# Reference builds (large, not part of the Go library)
+reference/
+
+# Test data (downloaded GRIB2 files)
+testdata/*.grib2
+testdata/*.grb2
+!testdata/.gitkeep
+
+# Go
+*.exe
+*.test
+*.out
+*.prof
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*~
