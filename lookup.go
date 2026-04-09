@@ -75,7 +75,8 @@ func (f *Field) BilinearValue(lat, lon float64) (float64, error) {
 // ---------------------------------------------------------------------------
 
 // nearestIndexLatLon computes the nearest grid index for a Template30
-// regular lat/lon grid using direct arithmetic (no search).
+// regular lat/lon grid. It finds the 4 surrounding grid points and picks
+// the one with the smallest haversine (great-circle) distance.
 func nearestIndexLatLon(t Template30, lat, lon float64) (idx int, nearLat, nearLon float64, err error) {
 	ni := int(t.Ni)
 	nj := int(t.Nj)
@@ -89,26 +90,51 @@ func nearestIndexLatLon(t Template30, lat, lon float64) (idx int, nearLat, nearL
 	fi := (lon - lon1) / di
 	fj := (lat - lat1) / dj
 
-	// Handle longitude wrapping: if the query longitude is far from the
-	// grid origin, try wrapping by +/- 360.
+	// Handle longitude wrapping: try +360 and -360 and pick whichever
+	// puts fi closer to the valid range [0, ni-1].
 	if di > 0 {
-		if fi < -0.5 {
-			fi = (lon + 360 - lon1) / di
-		} else if fi > float64(ni)-0.5 {
-			fi = (lon - 360 - lon1) / di
+		fiPlus := (lon + 360 - lon1) / di
+		fiMinus := (lon - 360 - lon1) / di
+		mid := float64(ni-1) / 2
+		if math.Abs(fiPlus-mid) < math.Abs(fi-mid) {
+			fi = fiPlus
+		}
+		if math.Abs(fiMinus-mid) < math.Abs(fi-mid) {
+			fi = fiMinus
 		}
 	}
 
-	i := int(math.Round(fi))
-	j := int(math.Round(fj))
+	// Find the 4 surrounding grid points
+	i0 := int(math.Floor(fi))
+	j0 := int(math.Floor(fj))
+	i1 := i0 + 1
+	j1 := j0 + 1
 
 	// Clamp to valid range
-	i = clamp(i, 0, ni-1)
-	j = clamp(j, 0, nj-1)
+	i0 = clamp(i0, 0, ni-1)
+	i1 = clamp(i1, 0, ni-1)
+	j0 = clamp(j0, 0, nj-1)
+	j1 = clamp(j1, 0, nj-1)
 
-	nearLat = lat1 + float64(j)*dj
-	nearLon = lon1 + float64(i)*di
-	idx = j*ni + i
+	// Evaluate haversine distance to all 4 candidates, pick the closest
+	candidates := [4][2]int{{j0, i0}, {j0, i1}, {j1, i0}, {j1, i1}}
+	bestDist := math.MaxFloat64
+	bestJ, bestI := j0, i0
+	for _, c := range candidates {
+		cj, ci := c[0], c[1]
+		cLat := lat1 + float64(cj)*dj
+		cLon := lon1 + float64(ci)*di
+		d := haversineDeg(lat, lon, cLat, cLon)
+		if d < bestDist {
+			bestDist = d
+			bestJ = cj
+			bestI = ci
+		}
+	}
+
+	nearLat = lat1 + float64(bestJ)*dj
+	nearLon = lon1 + float64(bestI)*di
+	idx = bestJ*ni + bestI
 	return idx, nearLat, nearLon, nil
 }
 
@@ -126,12 +152,17 @@ func bilinearLatLon(t Template30, values []float64, lat, lon float64) (float64, 
 	fi := (lon - lon1) / di
 	fj := (lat - lat1) / dj
 
-	// Handle longitude wrapping
+	// Handle longitude wrapping: pick the shift that puts fi closest
+	// to the valid range [0, ni-1].
 	if di > 0 {
-		if fi < 0 {
-			fi = (lon + 360 - lon1) / di
-		} else if fi >= float64(ni) {
-			fi = (lon - 360 - lon1) / di
+		fiPlus := (lon + 360 - lon1) / di
+		fiMinus := (lon - 360 - lon1) / di
+		mid := float64(ni-1) / 2
+		if math.Abs(fiPlus-mid) < math.Abs(fi-mid) {
+			fi = fiPlus
+		}
+		if math.Abs(fiMinus-mid) < math.Abs(fi-mid) {
+			fi = fiMinus
 		}
 	}
 
@@ -219,30 +250,13 @@ func latLonGridParams(t Template30) (lat1, lon1, di, dj float64) {
 // Template31 (rotated lat/lon) O(1) index computation
 // ---------------------------------------------------------------------------
 
-// nearestIndexRotatedLatLon converts the target geographic (lat,lon) into
-// rotated coordinates, then applies the same direct index arithmetic as
-// Template30. This is O(1) instead of O(n) brute-force search.
-func nearestIndexRotatedLatLon(t Template31, lat, lon float64) (idx int, nearLat, nearLon float64, err error) {
+// rotatedCanonicalParams computes the canonical grid origin and step sizes
+// for a Template31 rotated lat/lon grid. The canonical order is
+// north-to-south, west-to-east (after applyScanningMode).
+func rotatedCanonicalParams(t Template31) (canonLat0, canonLon0, canonDi, canonDj float64) {
 	ni := int(t.Ni)
 	nj := int(t.Nj)
-	if ni <= 0 || nj <= 0 {
-		return 0, 0, 0, fmt.Errorf("grib2: invalid grid dimensions Ni=%d, Nj=%d", ni, nj)
-	}
 
-	southPoleLat := float64(t.LatitudeOfSouthernPole) * 1e-6
-	southPoleLon := float64(t.LongitudeOfSouthernPole) * 1e-6
-	angleOfRot := float64(t.AngleOfRotation) * 1e-6
-
-	// Convert target geographic coordinates to rotated coordinates.
-	rLat, rLon := coordRotate(lat, lon, angleOfRot, southPoleLat, southPoleLon)
-
-	// GridCoordinates() and Values() both return canonical order
-	// (north-to-south, west-to-east after applyScanningMode).
-	//
-	// GridCoordinates builds raw-order coords from (lat1, lon1) with
-	// scanning-direction-aware di/dj, then applyScanningMode flips to
-	// canonical. We need to compute the canonical grid origin and steps
-	// to match that final layout.
 	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
 	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
 	lat2 := float64(t.LatitudeOfLastGridPoint) * 1e-6
@@ -278,54 +292,104 @@ func nearestIndexRotatedLatLon(t Template31, lat, lon float64) (idx int, nearLat
 	}
 
 	// Canonical origin after applyScanningMode:
-	// - iNeg is flipped → col 0 = westernmost. If iNeg, raw col 0 = lon1 (east),
-	//   after flip col 0 = lon1 + (ni-1)*(-di) = lon2 (west). If !iNeg, col 0 = lon1 (west).
-	// - jPos is flipped → row 0 = northernmost. If jPos, raw row 0 = lat1 (south),
-	//   after flip row 0 = lat2 (north). If !jPos, row 0 = lat1 (north).
-	var canonLat0, canonLon0, canonDi, canonDj float64
+	// - iNeg is flipped: col 0 = westernmost
+	// - jPos is flipped: row 0 = northernmost
 	if jPos {
-		canonLat0 = lat2 // north
-		canonDj = -dj    // step southward (negative)
+		canonLat0 = lat2
+		canonDj = -dj
 	} else {
-		canonLat0 = lat1 // north (already north-to-south)
-		canonDj = -dj    // dj was positive (lat1-lat2)/(nj-1), negate for south
+		canonLat0 = lat1
+		canonDj = -dj
 	}
 	if iNeg {
-		canonLon0 = lon2 // west (lon2 is the western end when iNeg)
-		canonDi = di     // di was computed as the positive step magnitude
+		canonLon0 = lon2
 	} else {
-		canonLon0 = lon1 // west (lon1 is the western end when !iNeg)
-		canonDi = di
+		canonLon0 = lon1
 	}
+	canonDi = di
+	return
+}
+
+// nearestIndexRotatedLatLon finds the nearest grid point for a Template31
+// rotated lat/lon grid. It converts the target to rotated coordinates,
+// finds the 4 surrounding grid points, unrotates each back to geographic,
+// and picks the one with the smallest haversine distance. This matches
+// the eccodes approach and is correct at grid edges where simple rounding
+// in rotated space picks the wrong point.
+func nearestIndexRotatedLatLon(t Template31, lat, lon float64) (idx int, nearLat, nearLon float64, err error) {
+	ni := int(t.Ni)
+	nj := int(t.Nj)
+	if ni <= 0 || nj <= 0 {
+		return 0, 0, 0, fmt.Errorf("grib2: invalid grid dimensions Ni=%d, Nj=%d", ni, nj)
+	}
+
+	southPoleLat := float64(t.LatitudeOfSouthernPole) * 1e-6
+	southPoleLon := float64(t.LongitudeOfSouthernPole) * 1e-6
+	angleOfRot := float64(t.AngleOfRotation) * 1e-6
+
+	// Convert target geographic coordinates to rotated coordinates.
+	rLat, rLon := coordRotate(lat, lon, angleOfRot, southPoleLat, southPoleLon)
+
+	canonLat0, canonLon0, canonDi, canonDj := rotatedCanonicalParams(t)
 
 	fi := (rLon - canonLon0) / canonDi
 	fj := (rLat - canonLat0) / canonDj
 
-	// Handle longitude wrapping.
+	// Handle longitude wrapping: try +360 and -360 and pick whichever
+	// puts fi closer to the valid range [0, ni-1].
 	if canonDi > 0 {
-		if fi < -0.5 {
-			fi = (rLon + 360 - canonLon0) / canonDi
-		} else if fi > float64(ni)-0.5 {
-			fi = (rLon - 360 - canonLon0) / canonDi
+		fiPlus := (rLon + 360 - canonLon0) / canonDi
+		fiMinus := (rLon - 360 - canonLon0) / canonDi
+		mid := float64(ni-1) / 2
+		if math.Abs(fiPlus-mid) < math.Abs(fi-mid) {
+			fi = fiPlus
+		}
+		if math.Abs(fiMinus-mid) < math.Abs(fi-mid) {
+			fi = fiMinus
 		}
 	}
 
-	i := int(math.Round(fi))
-	j := int(math.Round(fj))
-	i = clamp(i, 0, ni-1)
-	j = clamp(j, 0, nj-1)
+	// Find the 4 surrounding grid points
+	i0 := int(math.Floor(fi))
+	j0 := int(math.Floor(fj))
+	i1 := i0 + 1
+	j1 := j0 + 1
 
-	// The nearest point in canonical rotated space — unrotate to geographic.
-	nearRotLat := canonLat0 + float64(j)*canonDj
-	nearRotLon := canonLon0 + float64(i)*canonDi
-	nearLat, nearLon = coordUnrotate(nearRotLat, nearRotLon, angleOfRot, southPoleLat, southPoleLon)
+	i0 = clamp(i0, 0, ni-1)
+	i1 = clamp(i1, 0, ni-1)
+	j0 = clamp(j0, 0, nj-1)
+	j1 = clamp(j1, 0, nj-1)
 
-	idx = j*ni + i
-	return idx, nearLat, nearLon, nil
+	// For each of the 4 candidates, unrotate to geographic and compute
+	// haversine distance from the target geographic point.
+	candidates := [4][2]int{{j0, i0}, {j0, i1}, {j1, i0}, {j1, i1}}
+	bestDist := math.MaxFloat64
+	bestJ, bestI := j0, i0
+	var bestLat, bestLon float64
+
+	for _, c := range candidates {
+		cj, ci := c[0], c[1]
+		cRotLat := canonLat0 + float64(cj)*canonDj
+		cRotLon := canonLon0 + float64(ci)*canonDi
+		cLat, cLon := coordUnrotate(cRotLat, cRotLon, angleOfRot, southPoleLat, southPoleLon)
+		d := haversineDeg(lat, lon, cLat, cLon)
+		if d < bestDist {
+			bestDist = d
+			bestJ = cj
+			bestI = ci
+			bestLat = cLat
+			bestLon = cLon
+		}
+	}
+
+	idx = bestJ*ni + bestI
+	return idx, bestLat, bestLon, nil
 }
 
 // bilinearRotatedLatLon performs bilinear interpolation on a Template31
-// rotated lat/lon grid by working in rotated coordinates.
+// rotated lat/lon grid. It uses the same 4-point finding logic as
+// nearestIndexRotatedLatLon, with bilinear weights computed in rotated
+// space (which is correct since the grid IS regular in rotated space).
 func bilinearRotatedLatLon(t Template31, values []float64, lat, lon float64) (float64, error) {
 	ni := int(t.Ni)
 	nj := int(t.Nj)
@@ -339,62 +403,22 @@ func bilinearRotatedLatLon(t Template31, values []float64, lat, lon float64) (fl
 
 	rLat, rLon := coordRotate(lat, lon, angleOfRot, southPoleLat, southPoleLon)
 
-	// Use the same canonical grid parameters as nearestIndexRotatedLatLon.
-	bLat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
-	bLon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
-	bLat2 := float64(t.LatitudeOfLastGridPoint) * 1e-6
-	bLon2 := float64(t.LongitudeOfLastGridPoint) * 1e-6
-
-	iNeg, jPos, _ := scanFlags(t.ScanningMode)
-
-	var bdi float64
-	if ni > 1 {
-		if iNeg {
-			if bLon1 > bLon2 {
-				bdi = (bLon1 - bLon2) / float64(ni-1)
-			} else {
-				bdi = (bLon1 + 360 - bLon2) / float64(ni-1)
-			}
-		} else {
-			if bLon2 > bLon1 {
-				bdi = (bLon2 - bLon1) / float64(ni-1)
-			} else {
-				bdi = (bLon2 + 360 - bLon1) / float64(ni-1)
-			}
-		}
-	}
-	var bdj float64
-	if nj > 1 {
-		if jPos {
-			bdj = (bLat2 - bLat1) / float64(nj-1)
-		} else {
-			bdj = (bLat1 - bLat2) / float64(nj-1)
-		}
-	}
-
-	var cLat0, cLon0, cDi, cDj float64
-	if jPos {
-		cLat0 = bLat2
-		cDj = -bdj
-	} else {
-		cLat0 = bLat1
-		cDj = -bdj
-	}
-	if iNeg {
-		cLon0 = bLon2
-	} else {
-		cLon0 = bLon1
-	}
-	cDi = bdi
+	cLat0, cLon0, cDi, cDj := rotatedCanonicalParams(t)
 
 	fi := (rLon - cLon0) / cDi
 	fj := (rLat - cLat0) / cDj
 
+	// Handle longitude wrapping: pick the shift that puts fi closest
+	// to the valid range [0, ni-1].
 	if cDi > 0 {
-		if fi < 0 {
-			fi = (rLon + 360 - cLon0) / cDi
-		} else if fi >= float64(ni) {
-			fi = (rLon - 360 - cLon0) / cDi
+		fiPlus := (rLon + 360 - cLon0) / cDi
+		fiMinus := (rLon - 360 - cLon0) / cDi
+		mid := float64(ni-1) / 2
+		if math.Abs(fiPlus-mid) < math.Abs(fi-mid) {
+			fi = fiPlus
+		}
+		if math.Abs(fiMinus-mid) < math.Abs(fi-mid) {
+			fi = fiMinus
 		}
 	}
 
@@ -607,4 +631,11 @@ func haversineRad(lat1, lon1, lat2, lon2 float64) float64 {
 
 func deg2rad(d float64) float64 {
 	return d * math.Pi / 180
+}
+
+// haversineDeg computes the great-circle angular distance between two
+// points given in degrees. The returned value is in radians and is only
+// used for relative comparison (smaller = closer).
+func haversineDeg(lat1, lon1, lat2, lon2 float64) float64 {
+	return haversineRad(deg2rad(lat1), deg2rad(lon1), deg2rad(lat2), deg2rad(lon2))
 }

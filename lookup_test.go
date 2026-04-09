@@ -383,10 +383,9 @@ func TestNearestValue_Template31_O1(t *testing.T) {
 }
 
 // TestNearestValue_Template31_BruteForceAgreement verifies that the O(1)
-// index computation matches brute-force search for Template31 grids.
-// This catches the class of bugs where coordinates are correct but the
-// index into the values array is wrong (e.g., row inversion from
-// scanning mode mismatch).
+// index computation matches brute-force haversine search for Template31 grids.
+// Both the O(1) path and the brute-force use haversine distance, so they
+// should agree at ALL points including grid edges.
 func TestNearestValue_Template31_BruteForceAgreement(t *testing.T) {
 	raw, err := os.ReadFile("testdata/constant_field.grib2")
 	if err != nil {
@@ -403,15 +402,20 @@ func TestNearestValue_Template31_BruteForceAgreement(t *testing.T) {
 		t.Fatalf("GridCoordinates: %v", err)
 	}
 
-	// Pick query points well inside the grid interior (lat [43.8,84.7], lon [-30.4,92.7]).
-	// Points near the grid boundary have higher O(1)-vs-brute disagreement
-	// due to rotated→geographic mapping distortion, so test interior points.
+	// Include both interior and edge/boundary points. The haversine-based
+	// approach should agree with brute force for points within or near
+	// the grid domain. Points far outside the grid domain are excluded
+	// as they clamp to a grid corner where the O(1) approach cannot
+	// enumerate all boundary candidates.
 	queries := [][2]float64{
 		{60.0, 10.0},
 		{55.0, 20.0},
 		{65.0, 30.0},
 		{70.0, 50.0},
 		{75.0, 60.0},
+		{50.0, -20.0}, // near grid edge in rotated lat
+		{80.0, 0.0},   // near top edge
+		{84.0, 60.0},  // near grid corner
 	}
 
 	for _, q := range queries {
@@ -424,13 +428,13 @@ func TestNearestValue_Template31_BruteForceAgreement(t *testing.T) {
 			continue
 		}
 
-		// Brute-force result
+		// Brute-force result using haversine
 		bestIdx := 0
 		bestDist := math.MaxFloat64
+		latRad := deg2rad(targetLat)
+		lonRad := deg2rad(targetLon)
 		for j := range lats {
-			dlat := lats[j] - targetLat
-			dlon := lons[j] - targetLon
-			d := dlat*dlat + dlon*dlon
+			d := haversineRad(latRad, lonRad, deg2rad(lats[j]), deg2rad(lons[j]))
 			if d < bestDist {
 				bestDist = d
 				bestIdx = j
@@ -440,15 +444,10 @@ func TestNearestValue_Template31_BruteForceAgreement(t *testing.T) {
 		if o1Idx != bestIdx {
 			tmpl31 := field.Section3.Template.(Template31)
 			ni31 := int(tmpl31.Ni)
-			// Check if the two results are within 1 grid cell of each other.
-			// The O(1) path works in rotated space where the grid is regular,
-			// but geographic distances can differ slightly near grid edges.
 			o1Row, o1Col := o1Idx/ni31, o1Idx%ni31
 			bfRow, bfCol := bestIdx/ni31, bestIdx%ni31
-			if abs(o1Row-bfRow) > 1 || abs(o1Col-bfCol) > 1 {
-				t.Errorf("query (%f, %f): O(1) idx=%d (row=%d,col=%d), brute idx=%d (row=%d,col=%d) — more than 1 cell apart",
-					targetLat, targetLon, o1Idx, o1Row, o1Col, bestIdx, bfRow, bfCol)
-			}
+			t.Errorf("query (%f, %f): O(1) idx=%d (row=%d,col=%d), brute idx=%d (row=%d,col=%d)",
+				targetLat, targetLon, o1Idx, o1Row, o1Col, bestIdx, bfRow, bfCol)
 		}
 	}
 }
