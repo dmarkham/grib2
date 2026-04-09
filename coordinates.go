@@ -220,6 +220,59 @@ func gridCoordsRotatedLatLon(t Template31, nDataPoints uint32) ([]float64, []flo
 	return lats, lons, nil
 }
 
+// coordRotate converts geographic (lat,lon) to rotated (lat,lon).
+// This is the exact inverse of coordUnrotate.
+// The unrotate applies: R_z(oAngle) * R_y(tAngle) to (x,y,z) then subtracts angleOfRot from lon.
+// The rotate must: add angleOfRot to lon, then apply the TRANSPOSE: R_y(-tAngle) * R_z(-oAngle).
+func coordRotate(lat, lon, angleOfRot, southPoleLat, southPoleLon float64) (float64, float64) {
+	const deg2rad = math.Pi / 180.0
+	const rad2deg = 180.0 / math.Pi
+
+	// Use the same angle definitions as unrotate.
+	tAngle := -(90.0 + southPoleLat)
+	oAngle := -southPoleLon
+
+	sinT := math.Sin(deg2rad * tAngle)
+	cosT := math.Cos(deg2rad * tAngle)
+	sinO := math.Sin(deg2rad * oAngle)
+	cosO := math.Cos(deg2rad * oAngle)
+
+	// Convert geographic to Cartesian.
+	latr := lat * deg2rad
+	lonr := lon * deg2rad
+	xg := math.Cos(lonr) * math.Cos(latr)
+	yg := math.Sin(lonr) * math.Cos(latr)
+	zg := math.Sin(latr)
+
+	// The unrotate matrix M maps rotated→geographic:
+	//   xg = cosT*cosO*xr + sinO*yr + sinT*cosO*zr
+	//   yg = -cosT*sinO*xr + cosO*yr - sinT*sinO*zr
+	//   zg = -sinT*xr + cosT*zr
+	//
+	// The inverse (transpose, since M is orthogonal) maps geographic→rotated:
+	//   xr = cosT*cosO*xg - cosT*sinO*yg - sinT*zg
+	//   yr = sinO*xg + cosO*yg
+	//   zr = sinT*cosO*xg - sinT*sinO*yg + cosT*zg
+
+	xr := cosT*cosO*xg - cosT*sinO*yg - sinT*zg
+	yr := sinO*xg + cosO*yg
+	zr := sinT*cosO*xg - sinT*sinO*yg + cosT*zg
+
+	if zr > 1.0 {
+		zr = 1.0
+	}
+	if zr < -1.0 {
+		zr = -1.0
+	}
+
+	retLat := math.Asin(zr) * rad2deg
+	retLon := math.Atan2(yr, xr) * rad2deg
+
+	retLon += angleOfRot
+
+	return retLat, retLon
+}
+
 // coordUnrotate converts rotated (lat,lon) to geographic (lat,lon).
 // Based on ecKit RotateGrid::unrotate as used in eccodes.
 func coordUnrotate(inlat, inlon, angleOfRot, southPoleLat, southPoleLon float64) (float64, float64) {

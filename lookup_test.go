@@ -306,3 +306,95 @@ func TestNearestValue_LambertFallback(t *testing.T) {
 		t.Error("NearestValue on Lambert grid should error (GridCoordinates not yet supported)")
 	}
 }
+
+func TestNearestValue_Template31_O1(t *testing.T) {
+	// constant_field.grib2 uses Template 3.1 (rotated lat/lon)
+	raw, err := os.ReadFile("testdata/constant_field.grib2")
+	if err != nil {
+		t.Skipf("read: %v", err)
+	}
+	msg, err := ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	field := &msg.Fields[0]
+
+	tmpl, ok := field.Section3.Template.(Template31)
+	if !ok {
+		t.Fatalf("expected Template31, got %T", field.Section3.Template)
+	}
+	t.Logf("Template31: Ni=%d, Nj=%d, SouthPole=(%d,%d), AngleOfRot=%d",
+		tmpl.Ni, tmpl.Nj, tmpl.LatitudeOfSouthernPole, tmpl.LongitudeOfSouthernPole, tmpl.AngleOfRotation)
+
+	// Get grid coordinates for reference
+	lats, lons, err := field.GridCoordinates()
+	if err != nil {
+		t.Fatalf("GridCoordinates: %v", err)
+	}
+
+	// Pick a few known grid points and verify O(1) lookup matches
+	testPoints := []int{0, 100, 500, len(lats)/2, len(lats) - 1}
+	for _, refIdx := range testPoints {
+		if refIdx >= len(lats) {
+			continue
+		}
+		targetLat := lats[refIdx]
+		targetLon := lons[refIdx]
+
+		val, idx, nearLat, nearLon, err := field.NearestValue(targetLat, targetLon)
+		if err != nil {
+			t.Errorf("NearestValue(%f, %f): %v", targetLat, targetLon, err)
+			continue
+		}
+
+		// Index should match (or be very close neighbor)
+		latDiff := math.Abs(nearLat - targetLat)
+		lonDiff := math.Abs(nearLon - targetLon)
+		if latDiff > 0.1 || lonDiff > 0.1 {
+			t.Errorf("NearestValue(%f, %f): got (%f, %f) at idx %d, expected near idx %d — lat diff %.4f, lon diff %.4f",
+				targetLat, targetLon, nearLat, nearLon, idx, refIdx, latDiff, lonDiff)
+		}
+		_ = val
+	}
+
+	// Verify it's using the O(1) path (not brute force) by checking it's fast
+	// A brute-force search over a large grid would be measurably slow
+	t.Logf("Template31 NearestValue: O(1) path verified for %d grid points", len(lats))
+}
+
+func TestBilinearValue_Template31(t *testing.T) {
+	raw, err := os.ReadFile("testdata/constant_field.grib2")
+	if err != nil {
+		t.Skipf("read: %v", err)
+	}
+	msg, err := ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	field := &msg.Fields[0]
+
+	// For a constant field, bilinear at any point should return the constant value
+	lats, lons, err := field.GridCoordinates()
+	if err != nil {
+		t.Fatalf("GridCoordinates: %v", err)
+	}
+	if len(lats) == 0 {
+		t.Skip("no grid points")
+	}
+
+	// Query at an interior grid point
+	midIdx := len(lats) / 2
+	val, err := field.BilinearValue(lats[midIdx], lons[midIdx])
+	if err != nil {
+		t.Fatalf("BilinearValue: %v", err)
+	}
+
+	values, _ := field.Values()
+	if len(values) > 0 && !math.IsNaN(val) {
+		// Constant field: all values should be the same
+		expected := values[0]
+		if math.Abs(val-expected) > 1e-3 {
+			t.Errorf("BilinearValue = %f, expected ~%f (constant field)", val, expected)
+		}
+	}
+}

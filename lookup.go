@@ -22,6 +22,8 @@ func (f *Field) NearestValue(lat, lon float64) (value float64, idx int, nearLat,
 	switch tmpl := f.Section3.Template.(type) {
 	case Template30:
 		idx, nearLat, nearLon, err = nearestIndexLatLon(tmpl, lat, lon)
+	case Template31:
+		idx, nearLat, nearLon, err = nearestIndexRotatedLatLon(tmpl, lat, lon)
 	case Template340:
 		if tmpl.Ni != 0xFFFFFFFF {
 			idx, nearLat, nearLon, err = nearestIndexRegularGaussian(tmpl, lat, lon)
@@ -56,6 +58,8 @@ func (f *Field) BilinearValue(lat, lon float64) (float64, error) {
 	switch tmpl := f.Section3.Template.(type) {
 	case Template30:
 		return bilinearLatLon(tmpl, values, lat, lon)
+	case Template31:
+		return bilinearRotatedLatLon(tmpl, values, lat, lon)
 	case Template340:
 		if tmpl.Ni == 0xFFFFFFFF {
 			return 0, fmt.Errorf("grib2: BilinearValue not supported for reduced Gaussian grids")
@@ -209,6 +213,155 @@ func latLonGridParams(t Template30) (lat1, lon1, di, dj float64) {
 		dj = -dj
 	}
 	return
+}
+
+// ---------------------------------------------------------------------------
+// Template31 (rotated lat/lon) O(1) index computation
+// ---------------------------------------------------------------------------
+
+// nearestIndexRotatedLatLon converts the target geographic (lat,lon) into
+// rotated coordinates, then applies the same direct index arithmetic as
+// Template30. This is O(1) instead of O(n) brute-force search.
+func nearestIndexRotatedLatLon(t Template31, lat, lon float64) (idx int, nearLat, nearLon float64, err error) {
+	ni := int(t.Ni)
+	nj := int(t.Nj)
+	if ni <= 0 || nj <= 0 {
+		return 0, 0, 0, fmt.Errorf("grib2: invalid grid dimensions Ni=%d, Nj=%d", ni, nj)
+	}
+
+	southPoleLat := float64(t.LatitudeOfSouthernPole) * 1e-6
+	southPoleLon := float64(t.LongitudeOfSouthernPole) * 1e-6
+	angleOfRot := float64(t.AngleOfRotation) * 1e-6
+
+	// Convert target geographic coordinates to rotated coordinates.
+	rLat, rLon := coordRotate(lat, lon, angleOfRot, southPoleLat, southPoleLon)
+
+	// Grid parameters in rotated space (same layout as Template30).
+	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
+	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
+	lat2 := float64(t.LatitudeOfLastGridPoint) * 1e-6
+
+	var di, dj float64
+	if t.IDirectionIncrement != 0 && t.IDirectionIncrement != 0xFFFFFFFF {
+		di = float64(t.IDirectionIncrement) * 1e-6
+	} else if ni > 1 {
+		lon2 := float64(t.LongitudeOfLastGridPoint) * 1e-6
+		di = (lon2 - lon1) / float64(ni-1)
+	}
+	if t.JDirectionIncrement != 0 && t.JDirectionIncrement != 0xFFFFFFFF {
+		dj = float64(t.JDirectionIncrement) * 1e-6
+	} else if nj > 1 {
+		dj = math.Abs(lat2-lat1) / float64(nj-1)
+	}
+	if lat2 < lat1 {
+		dj = -dj
+	}
+
+	// Direct index computation in rotated space.
+	fi := (rLon - lon1) / di
+	fj := (rLat - lat1) / dj
+
+	// Handle longitude wrapping.
+	if di > 0 {
+		if fi < -0.5 {
+			fi = (rLon + 360 - lon1) / di
+		} else if fi > float64(ni)-0.5 {
+			fi = (rLon - 360 - lon1) / di
+		}
+	}
+
+	i := int(math.Round(fi))
+	j := int(math.Round(fj))
+	i = clamp(i, 0, ni-1)
+	j = clamp(j, 0, nj-1)
+
+	// The nearest point in rotated space — unrotate back to geographic.
+	nearRotLat := lat1 + float64(j)*dj
+	nearRotLon := lon1 + float64(i)*di
+	nearLat, nearLon = coordUnrotate(nearRotLat, nearRotLon, angleOfRot, southPoleLat, southPoleLon)
+
+	idx = j*ni + i
+	return idx, nearLat, nearLon, nil
+}
+
+// bilinearRotatedLatLon performs bilinear interpolation on a Template31
+// rotated lat/lon grid by working in rotated coordinates.
+func bilinearRotatedLatLon(t Template31, values []float64, lat, lon float64) (float64, error) {
+	ni := int(t.Ni)
+	nj := int(t.Nj)
+	if ni < 2 || nj < 2 {
+		return 0, fmt.Errorf("grib2: grid too small for bilinear interpolation: Ni=%d, Nj=%d", ni, nj)
+	}
+
+	southPoleLat := float64(t.LatitudeOfSouthernPole) * 1e-6
+	southPoleLon := float64(t.LongitudeOfSouthernPole) * 1e-6
+	angleOfRot := float64(t.AngleOfRotation) * 1e-6
+
+	rLat, rLon := coordRotate(lat, lon, angleOfRot, southPoleLat, southPoleLon)
+
+	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
+	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
+	lat2 := float64(t.LatitudeOfLastGridPoint) * 1e-6
+
+	var di, dj float64
+	if t.IDirectionIncrement != 0 && t.IDirectionIncrement != 0xFFFFFFFF {
+		di = float64(t.IDirectionIncrement) * 1e-6
+	} else if ni > 1 {
+		lon2 := float64(t.LongitudeOfLastGridPoint) * 1e-6
+		di = (lon2 - lon1) / float64(ni-1)
+	}
+	if t.JDirectionIncrement != 0 && t.JDirectionIncrement != 0xFFFFFFFF {
+		dj = float64(t.JDirectionIncrement) * 1e-6
+	} else if nj > 1 {
+		dj = math.Abs(lat2-lat1) / float64(nj-1)
+	}
+	if lat2 < lat1 {
+		dj = -dj
+	}
+
+	fi := (rLon - lon1) / di
+	fj := (rLat - lat1) / dj
+
+	if di > 0 {
+		if fi < 0 {
+			fi = (rLon + 360 - lon1) / di
+		} else if fi >= float64(ni) {
+			fi = (rLon - 360 - lon1) / di
+		}
+	}
+
+	i0 := int(math.Floor(fi))
+	j0 := int(math.Floor(fj))
+	xFrac := fi - float64(i0)
+	yFrac := fj - float64(j0)
+
+	if i0 < 0 {
+		i0 = 0
+		xFrac = 0
+	}
+	if j0 < 0 {
+		j0 = 0
+		yFrac = 0
+	}
+	if i0 >= ni-1 {
+		i0 = ni - 2
+		xFrac = 1
+	}
+	if j0 >= nj-1 {
+		j0 = nj - 2
+		yFrac = 1
+	}
+
+	v00 := gridVal(values, j0*ni+i0)
+	v10 := gridVal(values, j0*ni+i0+1)
+	v01 := gridVal(values, (j0+1)*ni+i0)
+	v11 := gridVal(values, (j0+1)*ni+i0+1)
+
+	if math.IsNaN(v00) || math.IsNaN(v10) || math.IsNaN(v01) || math.IsNaN(v11) {
+		return 0, fmt.Errorf("grib2: BilinearValue: one or more surrounding grid points are missing (NaN)")
+	}
+
+	return v00*(1-xFrac)*(1-yFrac) + v10*xFrac*(1-yFrac) + v01*(1-xFrac)*yFrac + v11*xFrac*yFrac, nil
 }
 
 // ---------------------------------------------------------------------------

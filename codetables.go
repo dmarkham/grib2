@@ -656,6 +656,9 @@ var parameterTable = map[uint32]string{
 	0x001314: "In-cloud turbulence",
 	0x001315: "Clear air turbulence (CAT)",
 	0x001320: "Highest freezing level",
+	// CMC local use parameters (non-WMO, widely used in Canadian models)
+	0x001326: "Sky transparency index",
+	0x001327: "Seeing index",
 
 	// ---- Discipline 0, Category 20: Atmospheric chemical constituents ----
 	0x001400: "Mass density (concentration)",
@@ -966,6 +969,9 @@ var parameterUnitTable = map[uint32]string{
 	0x001303: "m",
 	0x00130B: "J/kg",
 	0x001320: "m",
+	// CMC local use
+	0x001326: "Numeric",
+	0x001327: "Numeric",
 
 	// ---- Discipline 2, Category 0: Vegetation/biomass ----
 	0x020001: "m",
