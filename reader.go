@@ -105,6 +105,23 @@ func writeSignMag32(val int32) uint32 {
 	return uint32(val)
 }
 
+// readSignMag8 reads a sign-magnitude int8.
+// Bit 7 = sign (1 = negative), bits 0-6 = magnitude.
+func readSignMag8(b byte) int8 {
+	if b&0x80 != 0 {
+		return -int8(b & 0x7F)
+	}
+	return int8(b)
+}
+
+// writeSignMag8 encodes an int8 as sign-magnitude.
+func writeSignMag8(val int8) byte {
+	if val < 0 {
+		return 0x80 | byte(-val)
+	}
+	return byte(val)
+}
+
 // readFloat32IEEE reads a big-endian IEEE 754 float32.
 func readFloat32IEEE(b []byte, offset int) float32 {
 	bits := binary.BigEndian.Uint32(b[offset : offset+4])

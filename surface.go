@@ -19,7 +19,7 @@ func (f *Field) SurfaceLevel() (float64, error) {
 	if tmpl == nil {
 		return 0, errNoTemplate40("SurfaceLevel")
 	}
-	return computeSurfaceValue(tmpl.ScaleFactorOfFirstSurface, tmpl.ScaledValueOfFirstSurface, tmpl.TypeOfFirstFixedSurface), nil
+	return computeSurfaceValue(tmpl.ScaleFactorOfFirstSurface, tmpl.ScaledValueOfFirstSurface), nil
 }
 
 // SurfaceLevelHPa returns the first fixed surface level in hectopascals (hPa/mbar)
@@ -30,7 +30,7 @@ func (f *Field) SurfaceLevelHPa() (float64, error) {
 	if tmpl == nil {
 		return 0, errNoTemplate40("SurfaceLevelHPa")
 	}
-	val := computeSurfaceValue(tmpl.ScaleFactorOfFirstSurface, tmpl.ScaledValueOfFirstSurface, tmpl.TypeOfFirstFixedSurface)
+	val := computeSurfaceValue(tmpl.ScaleFactorOfFirstSurface, tmpl.ScaledValueOfFirstSurface)
 	if tmpl.TypeOfFirstFixedSurface == 100 {
 		// Isobaric surface: value is in Pa, convert to hPa
 		return val / 100.0, nil
@@ -47,37 +47,19 @@ func (f *Field) SurfaceType() (uint8, error) {
 	return tmpl.TypeOfFirstFixedSurface, nil
 }
 
-// computeSurfaceValue applies the GRIB2 scaling formula with fallback for
-// non-standard scale factors.
+// computeSurfaceValue applies the GRIB2 scaling formula:
 //
-// surfaceType is needed because the fallback behavior differs for isobaric
-// surfaces (type 100) where the raw value from CMC/RDPS is in hPa, but the
-// standard unit is Pa.
-func computeSurfaceValue(scaleFactor int8, scaledValue uint32, surfaceType uint8) float64 {
-	// Missing values (0xFF for unsigned, or MISSING for the template)
+//	value = scaledValue * 10^(-scaleFactor)
+//
+// The scale factor is read as sign-magnitude (per the WMO spec), so
+// values like byte 0x84 are correctly interpreted as -4, not -124.
+// This means the standard formula works for all known producers
+// (GFS, ECMWF, CMC/RDPS, etc.) without any special-case hacks.
+func computeSurfaceValue(scaleFactor int8, scaledValue uint32) float64 {
 	if scaledValue == 0xFFFFFFFF {
 		return math.NaN()
 	}
-
-	// Standard formula: value = scaledValue * 10^(-scaleFactor)
-	// scaleFactor in [-10, 10] is reasonable for any real-world encoding.
-	if scaleFactor >= -10 && scaleFactor <= 10 {
-		return float64(scaledValue) * math.Pow(10, float64(-scaleFactor))
-	}
-
-	// Fallback: ignore the garbage scale factor.
-	// CMC/RDPS uses scaleFactor values like -124/-125 with scaledValue
-	// being the level in compact form (e.g., 2 for 200hPa, 85 for 850hPa).
-	//
-	// For isobaric surfaces (type 100), the standard unit is Pa but CMC
-	// stores hPa-scale values. Detect this: if the raw value is too small
-	// to be Pa (< 1100, since the lowest standard pressure level is 1000hPa
-	// = 100000 Pa), convert from hPa to Pa by multiplying by 100.
-	raw := float64(scaledValue)
-	if surfaceType == 100 && raw < 1100 {
-		return raw * 100 // treat as hPa, convert to Pa
-	}
-	return raw
+	return float64(scaledValue) * math.Pow(10, float64(-scaleFactor))
 }
 
 // extractTemplate40 gets the base Template40 from any product template.

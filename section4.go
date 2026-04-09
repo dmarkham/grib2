@@ -312,10 +312,10 @@ func readTemplate40(body []byte) (Template40, error) {
 		IndicatorOfUnitOfTimeRange: body[8],              // octet 18
 		ForecastTime:               readInt32(body, 9),   // octets 19-22
 		TypeOfFirstFixedSurface:    body[13],              // octet 23
-		ScaleFactorOfFirstSurface:  int8(body[14]),       // octet 24
+		ScaleFactorOfFirstSurface:  readSignMag8(body[14]), // octet 24 (sign-magnitude per WMO)
 		ScaledValueOfFirstSurface:  readUint32(body, 15), // octets 25-28
 		TypeOfSecondFixedSurface:   body[19],             // octet 29
-		ScaleFactorOfSecondSurface: int8(body[20]),       // octet 30
+		ScaleFactorOfSecondSurface: readSignMag8(body[20]), // octet 30 (sign-magnitude per WMO)
 		ScaledValueOfSecondSurface: readUint32(body, 21), // octets 31-34
 	}, nil
 }
@@ -561,10 +561,10 @@ func writeTemplate40(t Template40) []byte {
 	buf[8] = t.IndicatorOfUnitOfTimeRange
 	binary.BigEndian.PutUint32(buf[9:13], uint32(t.ForecastTime))
 	buf[13] = t.TypeOfFirstFixedSurface
-	buf[14] = byte(t.ScaleFactorOfFirstSurface)
+	buf[14] = writeSignMag8(t.ScaleFactorOfFirstSurface)
 	binary.BigEndian.PutUint32(buf[15:19], t.ScaledValueOfFirstSurface)
 	buf[19] = t.TypeOfSecondFixedSurface
-	buf[20] = byte(t.ScaleFactorOfSecondSurface)
+	buf[20] = writeSignMag8(t.ScaleFactorOfSecondSurface)
 	binary.BigEndian.PutUint32(buf[21:25], t.ScaledValueOfSecondSurface)
 	return buf
 }
