@@ -1,0 +1,110 @@
+***** FILE: testdata/rdps_surface.grib2 
+#==============   MESSAGE 1 ( length=623940 )              ==============
+1-4       identifier = GRIB
+5-6       reserved = 0
+7         discipline = 0 [Meteorological products (grib2/tables/4/0.0.table) ]
+8         editionNumber = 2
+9-16      totalLength = 623940
+======================   SECTION_1 ( length=21, padding=0 )    ======================
+1-4       section1Length = 21
+5         numberOfSection = 1
+6-7       centre = 54 [Canadian Meteorological Service - Montreal (RSMC)  (common/c-11.table) ]
+8-9       subCentre = 0
+10        tablesVersion = 4 [Version implemented on 7 November 2007 (grib2/tables/1.0.table) ]
+11        localTablesVersion = 1 [Unknown code table entry () ]
+12        significanceOfReferenceTime = 1 [Start of forecast (grib2/tables/4/1.2.table) ]
+13-14     year = 2026
+15        month = 4
+16        day = 8
+17        hour = 18
+18        minute = 0
+19        second = 0
+20        productionStatusOfProcessedData = 0 [Operational products (grib2/tables/4/1.3.table) ]
+21        typeOfProcessedData = 2 [Analysis and forecast products (grib2/tables/4/1.4.table) ]
+======================   SECTION_3 ( length=84, padding=0 )    ======================
+1-4       section3Length = 84
+5         numberOfSection = 3
+6         sourceOfGridDefinition = 0 [Specified in Code table 3.1 (grib2/tables/4/3.0.table) ]
+7-10      numberOfDataPoints = 1191300
+11        numberOfOctectsForNumberOfPoints = 0
+12        interpretationOfNumberOfPoints = 0 [There is no appended list (grib2/tables/4/3.11.table) ]
+13-14     gridDefinitionTemplateNumber = 1 [Rotated latitude/longitude (grib2/tables/4/3.1.table) ]
+15        shapeOfTheEarth = 6 [Earth assumed spherical with radius of 6,371,229.0 m (grib2/tables/4/3.2.table) ]
+16        scaleFactorOfRadiusOfSphericalEarth = MISSING
+17-20     scaledValueOfRadiusOfSphericalEarth = MISSING
+21        scaleFactorOfEarthMajorAxis = MISSING
+22-25     scaledValueOfEarthMajorAxis = MISSING
+26        scaleFactorOfEarthMinorAxis = MISSING
+27-30     scaledValueOfEarthMinorAxis = MISSING
+31-34     Ni = 1140
+35-38     Nj = 1045
+39-42     basicAngleOfTheInitialProductionDomain = 0
+43-46     subdivisionsOfBasicAngle = MISSING
+47-50     latitudeOfFirstGridPoint = -48805954
+51-54     longitudeOfFirstGridPoint = 306141412
+55        resolutionAndComponentFlags = 56 [00111000 (grib2/tables/4/3.3.table) ]
+56-59     latitudeOfLastGridPoint = 45464939
+60-63     longitudeOfLastGridPoint = 48990594
+64-67     iDirectionIncrement = 90298
+68-71     jDirectionIncrement = 90298
+72        scanningMode = 64 [01000000 (grib2/tables/4/3.4.table) ]
+73-76     latitudeOfSouthernPole = -31758312
+77-80     longitudeOfSouthernPole = 267597031
+81-84     angleOfRotation = 0
+======================   SECTION_4 ( length=34, padding=0 )    ======================
+1-4       section4Length = 34
+5         numberOfSection = 4
+6-7       NV = 0
+8-9       productDefinitionTemplateNumber = 0 [Analysis or forecast at a horizontal level or in a horizontal layer at a point in time (grib2/tables/4/4.0.table) ]
+10        parameterCategory = 0 [Temperature (grib2/tables/4/4.1.0.table) ]
+11        parameterNumber = 0 [Temperature (K)  (grib2/tables/4/4.2.0.0.table) ]
+12        typeOfGeneratingProcess = 2 [Forecast (grib2/tables/4/4.3.table) ]
+13        backgroundProcess = 36
+14        generatingProcessIdentifier = 36
+15-16     hoursAfterDataCutoff = 0
+17        minutesAfterDataCutoff = 0
+18        indicatorOfUnitForForecastTime = 1 [Hour (grib2/tables/4/4.4.table) ]
+19-22     forecastTime = 8
+23        typeOfFirstFixedSurface = 103 [Specified height level above ground (m)  (grib2/tables/4/4.5.table) ]
+24        scaleFactorOfFirstFixedSurface = 0
+25-28     scaledValueOfFirstFixedSurface = 2
+29        typeOfSecondFixedSurface = 255 [Missing (grib2/tables/4/4.5.table) ]
+30        scaleFactorOfSecondFixedSurface = MISSING
+31-34     scaledValueOfSecondFixedSurface = MISSING
+======================   SECTION_5 ( length=23, padding=0 )    ======================
+1-4       section5Length = 23
+5         numberOfSection = 5
+6-9       numberOfValues = 1191300
+10-11     dataRepresentationTemplateNumber = 40 [JPEG2000 Packing (grib2/tables/4/5.0.table) ]
+12-15     referenceValue = 2332.14
+16-17     binaryScaleFactor = -2
+18-19     decimalScaleFactor = 1
+20        bitsPerValue = 12
+21        typeOfOriginalFieldValues = 0 [Floating point (grib2/tables/4/5.1.table) ]
+22        typeOfCompressionUsed = 0 [Lossless (grib2/tables/4/5.40.table) ]
+23        targetCompressionRatio = 255
+======================   SECTION_6 ( length=6, padding=0 )     ======================
+1-4       section6Length = 6
+5         numberOfSection = 6
+6         bitMapIndicator = 255 [A bit map does not apply to this product (grib2/tables/4/6.0.table) ]
+======================   SECTION_7 ( length=623752, padding=0 )   ======================
+1-4       section7Length = 623752
+5         numberOfSection = 7
+6-623752    codedValues = (1191300,623747) {
+3.0031384277e+02, 3.0036384277e+02, 3.0036384277e+02, 3.0026384277e+02, 3.0006384277e+02, 2.9983884277e+02, 2.9961384277e+02, 2.9948884277e+02, 
+2.9946384277e+02, 2.9958884277e+02, 2.9973884277e+02, 2.9991384277e+02, 3.0001384277e+02, 3.0021384277e+02, 3.0041384277e+02, 3.0058884277e+02, 
+3.0071384277e+02, 3.0086384277e+02, 3.0101384277e+02, 3.0118884277e+02, 3.0126384277e+02, 3.0133884277e+02, 3.0131384277e+02, 3.0123884277e+02, 
+3.0121384277e+02, 3.0116384277e+02, 3.0111384277e+02, 3.0108884277e+02, 3.0108884277e+02, 3.0106384277e+02, 3.0091384277e+02, 3.0048884277e+02, 
+3.0001384277e+02, 2.9973884277e+02, 2.9981384277e+02, 3.0011384277e+02, 3.0048884277e+02, 3.0071384277e+02, 3.0083884277e+02, 3.0091384277e+02, 
+3.0091384277e+02, 3.0091384277e+02, 3.0086384277e+02, 3.0086384277e+02, 3.0086384277e+02, 3.0083884277e+02, 3.0081384277e+02, 3.0068884277e+02, 
+3.0061384277e+02, 3.0058884277e+02, 3.0058884277e+02, 3.0058884277e+02, 3.0066384277e+02, 3.0068884277e+02, 3.0071384277e+02, 3.0071384277e+02, 
+3.0073884277e+02, 3.0073884277e+02, 3.0071384277e+02, 3.0071384277e+02, 3.0071384277e+02, 3.0071384277e+02, 3.0071384277e+02, 3.0071384277e+02, 
+3.0071384277e+02, 3.0068884277e+02, 3.0061384277e+02, 3.0058884277e+02, 3.0058884277e+02, 3.0058884277e+02, 3.0058884277e+02, 3.0058884277e+02, 
+3.0056384277e+02, 3.0048884277e+02, 3.0043884277e+02, 3.0033884277e+02, 3.0026384277e+02, 3.0023884277e+02, 3.0023884277e+02, 3.0021384277e+02, 
+3.0021384277e+02, 3.0018884277e+02, 3.0018884277e+02, 3.0016384277e+02, 3.0011384277e+02, 3.0008884277e+02, 3.0008884277e+02, 3.0006384277e+02, 
+3.0001384277e+02, 2.9998884277e+02, 2.9996384277e+02, 2.9993884277e+02, 2.9991384277e+02, 2.9986384277e+02, 2.9983884277e+02, 2.9981384277e+02, 
+2.9981384277e+02, 2.9976384277e+02, 2.9973884277e+02, 2.9971384277e+02
+... 1191200 more values
+} # data_jpeg2000_packing codedValues 
+======================   SECTION_8 ( length=4, padding=0 )     ======================
+1-4       7777 = 7777

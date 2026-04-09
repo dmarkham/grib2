@@ -1,10 +1,13 @@
 # Reference builds (large, not part of the Go library)
-reference/
+/reference/
 
-# Test data (downloaded GRIB2 files)
-testdata/*.grib2
-testdata/*.grb2
-!testdata/.gitkeep
+# Test data (large downloaded GRIB2 files)
+testdata/v.grib2
+testdata/high_level_api.grib2
+testdata/gfs.complex.mvmu.grib2
+# Keep small test fixtures and their reference data committed
+# Large eccodes reference value files (generated at test time)
+testdata/reference/*.values
 
 # Go
 *.exe
