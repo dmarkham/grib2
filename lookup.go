@@ -236,42 +236,77 @@ func nearestIndexRotatedLatLon(t Template31, lat, lon float64) (idx int, nearLat
 	// Convert target geographic coordinates to rotated coordinates.
 	rLat, rLon := coordRotate(lat, lon, angleOfRot, southPoleLat, southPoleLon)
 
-	// Both GridCoordinates() and Values() now return data in canonical order
-	// (north-to-south, west-to-east). Compute index in canonical order.
+	// GridCoordinates() and Values() both return canonical order
+	// (north-to-south, west-to-east after applyScanningMode).
 	//
-	// Canonical layout: row 0 = northernmost rotated lat, row nj-1 = southernmost.
-	// col 0 = westernmost rotated lon, col ni-1 = easternmost.
-	rawLat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
-	rawLon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
-	rawLat2 := float64(t.LatitudeOfLastGridPoint) * 1e-6
-	rawLon2 := float64(t.LongitudeOfLastGridPoint) * 1e-6
+	// GridCoordinates builds raw-order coords from (lat1, lon1) with
+	// scanning-direction-aware di/dj, then applyScanningMode flips to
+	// canonical. We need to compute the canonical grid origin and steps
+	// to match that final layout.
+	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
+	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
+	lat2 := float64(t.LatitudeOfLastGridPoint) * 1e-6
+	lon2 := float64(t.LongitudeOfLastGridPoint) * 1e-6
 
-	var di, dj float64
-	if t.IDirectionIncrement != 0 && t.IDirectionIncrement != 0xFFFFFFFF {
-		di = float64(t.IDirectionIncrement) * 1e-6
-	} else if ni > 1 {
-		di = math.Abs(rawLon2-rawLon1) / float64(ni-1)
+	iNeg, jPos, _ := scanFlags(t.ScanningMode)
+
+	// Compute di from the grid endpoints (same logic as gridCoordsRotatedLatLon).
+	var di float64
+	if ni > 1 {
+		if iNeg {
+			if lon1 > lon2 {
+				di = (lon1 - lon2) / float64(ni-1)
+			} else {
+				di = (lon1 + 360 - lon2) / float64(ni-1)
+			}
+		} else {
+			if lon2 > lon1 {
+				di = (lon2 - lon1) / float64(ni-1)
+			} else {
+				di = (lon2 + 360 - lon1) / float64(ni-1)
+			}
+		}
 	}
-	if t.JDirectionIncrement != 0 && t.JDirectionIncrement != 0xFFFFFFFF {
-		dj = float64(t.JDirectionIncrement) * 1e-6
-	} else if nj > 1 {
-		dj = math.Abs(rawLat2-rawLat1) / float64(nj-1)
+
+	var dj float64
+	if nj > 1 {
+		if jPos {
+			dj = (lat2 - lat1) / float64(nj-1)
+		} else {
+			dj = (lat1 - lat2) / float64(nj-1)
+		}
 	}
 
-	// Canonical origin: NW corner of rotated grid.
-	canonLat0 := math.Max(rawLat1, rawLat2) // northernmost
-	canonLon0 := math.Min(rawLon1, rawLon2) // westernmost
-	canonDj := -dj                           // south = increasing j
+	// Canonical origin after applyScanningMode:
+	// - iNeg is flipped → col 0 = westernmost. If iNeg, raw col 0 = lon1 (east),
+	//   after flip col 0 = lon1 + (ni-1)*(-di) = lon2 (west). If !iNeg, col 0 = lon1 (west).
+	// - jPos is flipped → row 0 = northernmost. If jPos, raw row 0 = lat1 (south),
+	//   after flip row 0 = lat2 (north). If !jPos, row 0 = lat1 (north).
+	var canonLat0, canonLon0, canonDi, canonDj float64
+	if jPos {
+		canonLat0 = lat2 // north
+		canonDj = -dj    // step southward (negative)
+	} else {
+		canonLat0 = lat1 // north (already north-to-south)
+		canonDj = -dj    // dj was positive (lat1-lat2)/(nj-1), negate for south
+	}
+	if iNeg {
+		canonLon0 = lon2 // west (lon2 is the western end when iNeg)
+		canonDi = di     // di was computed as the positive step magnitude
+	} else {
+		canonLon0 = lon1 // west (lon1 is the western end when !iNeg)
+		canonDi = di
+	}
 
-	fi := (rLon - canonLon0) / di
+	fi := (rLon - canonLon0) / canonDi
 	fj := (rLat - canonLat0) / canonDj
 
 	// Handle longitude wrapping.
-	if di > 0 {
+	if canonDi > 0 {
 		if fi < -0.5 {
-			fi = (rLon + 360 - canonLon0) / di
+			fi = (rLon + 360 - canonLon0) / canonDi
 		} else if fi > float64(ni)-0.5 {
-			fi = (rLon - 360 - canonLon0) / di
+			fi = (rLon - 360 - canonLon0) / canonDi
 		}
 	}
 
@@ -282,7 +317,7 @@ func nearestIndexRotatedLatLon(t Template31, lat, lon float64) (idx int, nearLat
 
 	// The nearest point in canonical rotated space — unrotate to geographic.
 	nearRotLat := canonLat0 + float64(j)*canonDj
-	nearRotLon := canonLon0 + float64(i)*di
+	nearRotLon := canonLon0 + float64(i)*canonDi
 	nearLat, nearLon = coordUnrotate(nearRotLat, nearRotLon, angleOfRot, southPoleLat, southPoleLon)
 
 	idx = j*ni + i
@@ -304,35 +339,62 @@ func bilinearRotatedLatLon(t Template31, values []float64, lat, lon float64) (fl
 
 	rLat, rLon := coordRotate(lat, lon, angleOfRot, southPoleLat, southPoleLon)
 
-	bRawLat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
-	bRawLon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
-	bRawLat2 := float64(t.LatitudeOfLastGridPoint) * 1e-6
-	bRawLon2 := float64(t.LongitudeOfLastGridPoint) * 1e-6
+	// Use the same canonical grid parameters as nearestIndexRotatedLatLon.
+	bLat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
+	bLon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
+	bLat2 := float64(t.LatitudeOfLastGridPoint) * 1e-6
+	bLon2 := float64(t.LongitudeOfLastGridPoint) * 1e-6
 
-	var di, dj float64
-	if t.IDirectionIncrement != 0 && t.IDirectionIncrement != 0xFFFFFFFF {
-		di = float64(t.IDirectionIncrement) * 1e-6
-	} else if ni > 1 {
-		di = math.Abs(bRawLon2-bRawLon1) / float64(ni-1)
+	iNeg, jPos, _ := scanFlags(t.ScanningMode)
+
+	var bdi float64
+	if ni > 1 {
+		if iNeg {
+			if bLon1 > bLon2 {
+				bdi = (bLon1 - bLon2) / float64(ni-1)
+			} else {
+				bdi = (bLon1 + 360 - bLon2) / float64(ni-1)
+			}
+		} else {
+			if bLon2 > bLon1 {
+				bdi = (bLon2 - bLon1) / float64(ni-1)
+			} else {
+				bdi = (bLon2 + 360 - bLon1) / float64(ni-1)
+			}
+		}
 	}
-	if t.JDirectionIncrement != 0 && t.JDirectionIncrement != 0xFFFFFFFF {
-		dj = float64(t.JDirectionIncrement) * 1e-6
-	} else if nj > 1 {
-		dj = math.Abs(bRawLat2-bRawLat1) / float64(nj-1)
+	var bdj float64
+	if nj > 1 {
+		if jPos {
+			bdj = (bLat2 - bLat1) / float64(nj-1)
+		} else {
+			bdj = (bLat1 - bLat2) / float64(nj-1)
+		}
 	}
 
-	canonLat0 := math.Max(bRawLat1, bRawLat2)
-	canonLon0 := math.Min(bRawLon1, bRawLon2)
-	canonDj := -dj
+	var cLat0, cLon0, cDi, cDj float64
+	if jPos {
+		cLat0 = bLat2
+		cDj = -bdj
+	} else {
+		cLat0 = bLat1
+		cDj = -bdj
+	}
+	if iNeg {
+		cLon0 = bLon2
+	} else {
+		cLon0 = bLon1
+	}
+	cDi = bdi
 
-	fi := (rLon - canonLon0) / di
-	fj := (rLat - canonLat0) / canonDj
+	fi := (rLon - cLon0) / cDi
+	fj := (rLat - cLat0) / cDj
 
-	if di > 0 {
+	if cDi > 0 {
 		if fi < 0 {
-			fi = (rLon + 360 - canonLon0) / di
+			fi = (rLon + 360 - cLon0) / cDi
 		} else if fi >= float64(ni) {
-			fi = (rLon - 360 - canonLon0) / di
+			fi = (rLon - 360 - cLon0) / cDi
 		}
 	}
 

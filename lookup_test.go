@@ -382,6 +382,77 @@ func TestNearestValue_Template31_O1(t *testing.T) {
 	t.Logf("Template31 NearestValue: O(1) path verified for %d grid points", len(lats))
 }
 
+// TestNearestValue_Template31_BruteForceAgreement verifies that the O(1)
+// index computation matches brute-force search for Template31 grids.
+// This catches the class of bugs where coordinates are correct but the
+// index into the values array is wrong (e.g., row inversion from
+// scanning mode mismatch).
+func TestNearestValue_Template31_BruteForceAgreement(t *testing.T) {
+	raw, err := os.ReadFile("testdata/constant_field.grib2")
+	if err != nil {
+		t.Skipf("read: %v", err)
+	}
+	msg, err := ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	field := &msg.Fields[0]
+
+	lats, lons, err := field.GridCoordinates()
+	if err != nil {
+		t.Fatalf("GridCoordinates: %v", err)
+	}
+
+	// Pick query points well inside the grid interior (lat [43.8,84.7], lon [-30.4,92.7]).
+	// Points near the grid boundary have higher O(1)-vs-brute disagreement
+	// due to rotated→geographic mapping distortion, so test interior points.
+	queries := [][2]float64{
+		{60.0, 10.0},
+		{55.0, 20.0},
+		{65.0, 30.0},
+		{70.0, 50.0},
+		{75.0, 60.0},
+	}
+
+	for _, q := range queries {
+		targetLat, targetLon := q[0], q[1]
+
+		// O(1) result
+		_, o1Idx, _, _, err := field.NearestValue(targetLat, targetLon)
+		if err != nil {
+			t.Errorf("NearestValue(%f, %f): %v", targetLat, targetLon, err)
+			continue
+		}
+
+		// Brute-force result
+		bestIdx := 0
+		bestDist := math.MaxFloat64
+		for j := range lats {
+			dlat := lats[j] - targetLat
+			dlon := lons[j] - targetLon
+			d := dlat*dlat + dlon*dlon
+			if d < bestDist {
+				bestDist = d
+				bestIdx = j
+			}
+		}
+
+		if o1Idx != bestIdx {
+			tmpl31 := field.Section3.Template.(Template31)
+			ni31 := int(tmpl31.Ni)
+			// Check if the two results are within 1 grid cell of each other.
+			// The O(1) path works in rotated space where the grid is regular,
+			// but geographic distances can differ slightly near grid edges.
+			o1Row, o1Col := o1Idx/ni31, o1Idx%ni31
+			bfRow, bfCol := bestIdx/ni31, bestIdx%ni31
+			if abs(o1Row-bfRow) > 1 || abs(o1Col-bfCol) > 1 {
+				t.Errorf("query (%f, %f): O(1) idx=%d (row=%d,col=%d), brute idx=%d (row=%d,col=%d) — more than 1 cell apart",
+					targetLat, targetLon, o1Idx, o1Row, o1Col, bestIdx, bfRow, bfCol)
+			}
+		}
+	}
+}
+
 func abs(x int) int {
 	if x < 0 {
 		return -x
