@@ -13,22 +13,36 @@ func (f *Field) GridCoordinates() (lats, lons []float64, err error) {
 	s3 := f.Section3
 	switch tmpl := s3.Template.(type) {
 	case Template30:
-		return gridCoordsLatLon(tmpl, s3.NumberOfDataPoints)
+		lats, lons, err = gridCoordsLatLon(tmpl, s3.NumberOfDataPoints)
 	case Template31:
-		return gridCoordsRotatedLatLon(tmpl, s3.NumberOfDataPoints)
+		lats, lons, err = gridCoordsRotatedLatLon(tmpl, s3.NumberOfDataPoints)
 	case Template310:
-		return gridCoordsMercator(tmpl, s3.NumberOfDataPoints)
+		lats, lons, err = gridCoordsMercator(tmpl, s3.NumberOfDataPoints)
 	case Template320:
-		return gridCoordsPolarStereographic(tmpl, s3.NumberOfDataPoints)
+		lats, lons, err = gridCoordsPolarStereographic(tmpl, s3.NumberOfDataPoints)
 	case Template330:
-		return gridCoordsLambert(tmpl, s3.NumberOfDataPoints)
+		lats, lons, err = gridCoordsLambert(tmpl, s3.NumberOfDataPoints)
 	case Template340:
-		return gridCoordsGaussian(tmpl, s3.NumberOfDataPoints, s3.OptionalPointNumbers, s3.OctetsForNumberOfPoints)
+		lats, lons, err = gridCoordsGaussian(tmpl, s3.NumberOfDataPoints, s3.OptionalPointNumbers, s3.OctetsForNumberOfPoints)
 	case Template390:
-		return gridCoordsSpaceView(tmpl, s3.NumberOfDataPoints)
+		lats, lons, err = gridCoordsSpaceView(tmpl, s3.NumberOfDataPoints)
 	default:
 		return nil, nil, fmt.Errorf("grib2: GridCoordinates not implemented for template %T", tmpl)
 	}
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Reorder coordinates to canonical order (matching Values()).
+	// The grid-specific functions produce coordinates in raw scanning order;
+	// Values() applies applyScanningMode to get canonical order. We must match.
+	scanMode, ni, nj := gridScanParams(s3.Template)
+	if scanMode != 0 && ni > 0 && nj > 0 {
+		lats = applyScanningMode(lats, scanMode, ni, nj)
+		lons = applyScanningMode(lons, scanMode, ni, nj)
+	}
+
+	return lats, lons, nil
 }
 
 // ---------------------------------------------------------------------------

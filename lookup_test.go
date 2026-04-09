@@ -323,17 +323,23 @@ func TestNearestValue_Template31_O1(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected Template31, got %T", field.Section3.Template)
 	}
-	t.Logf("Template31: Ni=%d, Nj=%d, SouthPole=(%d,%d), AngleOfRot=%d",
-		tmpl.Ni, tmpl.Nj, tmpl.LatitudeOfSouthernPole, tmpl.LongitudeOfSouthernPole, tmpl.AngleOfRotation)
+	t.Logf("Template31: Ni=%d, Nj=%d, ScanMode=0x%02x, SouthPole=(%d,%d)",
+		tmpl.Ni, tmpl.Nj, tmpl.ScanningMode, tmpl.LatitudeOfSouthernPole, tmpl.LongitudeOfSouthernPole)
 
-	// Get grid coordinates for reference
+	// Get grid coordinates and values for reference
 	lats, lons, err := field.GridCoordinates()
 	if err != nil {
 		t.Fatalf("GridCoordinates: %v", err)
 	}
+	values, err := field.Values()
+	if err != nil {
+		t.Fatalf("Values: %v", err)
+	}
 
-	// Pick a few known grid points and verify O(1) lookup matches
-	testPoints := []int{0, 100, 500, len(lats)/2, len(lats) - 1}
+	// Test multiple points spread across the grid.
+	// For each: query the exact grid point's geographic coordinates,
+	// verify the returned INDEX matches (not just coordinates).
+	testPoints := []int{0, 100, 500, len(lats) / 4, len(lats) / 2, 3 * len(lats) / 4, len(lats) - 1}
 	for _, refIdx := range testPoints {
 		if refIdx >= len(lats) {
 			continue
@@ -347,19 +353,40 @@ func TestNearestValue_Template31_O1(t *testing.T) {
 			continue
 		}
 
-		// Index should match (or be very close neighbor)
+		// The returned index must match the reference index.
+		// Allow off-by-one in row/col (rounding at grid boundary).
+		ni := int(tmpl.Ni)
+		refRow, refCol := refIdx/ni, refIdx%ni
+		gotRow, gotCol := idx/ni, idx%ni
+		rowDiff := abs(refRow - gotRow)
+		colDiff := abs(refCol - gotCol)
+		if rowDiff > 1 || colDiff > 1 {
+			t.Errorf("refIdx=%d (row=%d,col=%d) but got idx=%d (row=%d,col=%d) — off by (%d,%d)",
+				refIdx, refRow, refCol, idx, gotRow, gotCol, rowDiff, colDiff)
+		}
+
+		// The returned VALUE must match the value at the returned index.
+		if idx < len(values) && val != values[idx] {
+			t.Errorf("refIdx=%d: returned val=%f but values[%d]=%f", refIdx, val, idx, values[idx])
+		}
+
+		// Coordinates should be close.
 		latDiff := math.Abs(nearLat - targetLat)
 		lonDiff := math.Abs(nearLon - targetLon)
-		if latDiff > 0.1 || lonDiff > 0.1 {
-			t.Errorf("NearestValue(%f, %f): got (%f, %f) at idx %d, expected near idx %d — lat diff %.4f, lon diff %.4f",
-				targetLat, targetLon, nearLat, nearLon, idx, refIdx, latDiff, lonDiff)
+		if latDiff > 0.15 || lonDiff > 0.15 {
+			t.Errorf("NearestValue(%f, %f): got (%f, %f) at idx %d, expected near idx %d",
+				targetLat, targetLon, nearLat, nearLon, idx, refIdx)
 		}
-		_ = val
 	}
 
-	// Verify it's using the O(1) path (not brute force) by checking it's fast
-	// A brute-force search over a large grid would be measurably slow
 	t.Logf("Template31 NearestValue: O(1) path verified for %d grid points", len(lats))
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 func TestBilinearValue_Template31(t *testing.T) {

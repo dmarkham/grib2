@@ -129,16 +129,20 @@ func TestGridCoordMercator(t *testing.T) {
 		t.Fatalf("len(lats)=%d, len(lons)=%d, want %d", len(lats), len(lons), n)
 	}
 
-	// First point validation against eccodes output
+	// After canonical reorder, the first and last points should correspond
+	// to the template's first/last grid points (possibly swapped by scan mode).
 	tmpl := f.Section3.Template.(Template310)
-	wantLat1 := float64(tmpl.LatitudeOfFirstGridPoint) * 1e-6
-	wantLon1 := float64(tmpl.LongitudeOfFirstGridPoint) * 1e-6
+	lat1 := float64(tmpl.LatitudeOfFirstGridPoint) * 1e-6
+	lat2 := float64(tmpl.LatitudeOfLastGridPoint) * 1e-6
+	lon1 := float64(tmpl.LongitudeOfFirstGridPoint) * 1e-6
 
-	if math.Abs(lats[0]-wantLat1) > 0.01 {
-		t.Errorf("lats[0] = %f, want ~%f", lats[0], wantLat1)
+	// In canonical order, lats[0] should be near the larger lat (north).
+	wantNorth := math.Max(lat1, lat2)
+	if math.Abs(lats[0]-wantNorth) > 0.01 {
+		t.Errorf("lats[0] = %f, want ~%f (northernmost)", lats[0], wantNorth)
 	}
-	if math.Abs(lons[0]-wantLon1) > 0.01 {
-		t.Errorf("lons[0] = %f, want ~%f", lons[0], wantLon1)
+	if math.Abs(lons[0]-lon1) > 0.01 {
+		t.Errorf("lons[0] = %f, want ~%f", lons[0], lon1)
 	}
 
 	t.Logf("Mercator first: lat=%f lon=%f", lats[0], lons[0])
@@ -397,13 +401,32 @@ func crossValidate(t *testing.T, lats, lons, eccLats, eccLons []float64, toleran
 		}
 	}
 
+	// Our GridCoordinates outputs canonical order (north-to-south, west-to-east)
+	// but eccodes grib_get_data outputs raw scanning order. For comparison,
+	// sort both sets by (lat, lon) and compare sorted.
+	type coord struct{ lat, lon float64 }
+	ours := make([]coord, n)
+	eccs := make([]coord, n)
+	for i := 0; i < n; i++ {
+		ours[i] = coord{math.Round(lats[i]*1e4) / 1e4, math.Round(lons[i]*1e4) / 1e4}
+		eccs[i] = coord{math.Round(eccLats[i]*1e4) / 1e4, math.Round(eccLons[i]*1e4) / 1e4}
+	}
+	sortCoords := func(c []coord) {
+		for i := 1; i < len(c); i++ {
+			for j := i; j > 0 && (c[j].lat < c[j-1].lat || (c[j].lat == c[j-1].lat && c[j].lon < c[j-1].lon)); j-- {
+				c[j], c[j-1] = c[j-1], c[j]
+			}
+		}
+	}
+	sortCoords(ours)
+	sortCoords(eccs)
+
 	maxLatErr := 0.0
 	maxLonErr := 0.0
 	var badCount int
 	for i := 0; i < n; i++ {
-		latErr := math.Abs(lats[i] - eccLats[i])
-		lonErr := math.Abs(lons[i] - eccLons[i])
-		// Handle lon wrapping (e.g. 359.99 vs 0.01)
+		latErr := math.Abs(ours[i].lat - eccs[i].lat)
+		lonErr := math.Abs(ours[i].lon - eccs[i].lon)
 		if lonErr > 180 {
 			lonErr = 360 - lonErr
 		}
@@ -415,8 +438,8 @@ func crossValidate(t *testing.T, lats, lons, eccLats, eccLons []float64, toleran
 		}
 		if latErr > tolerance || lonErr > tolerance {
 			if badCount < 5 {
-				t.Errorf("point %d: lat=%f lon=%f, eccodes lat=%f lon=%f (latErr=%f lonErr=%f)",
-					i, lats[i], lons[i], eccLats[i], eccLons[i], latErr, lonErr)
+				t.Errorf("sorted[%d]: lat=%f lon=%f, eccodes lat=%f lon=%f (latErr=%f lonErr=%f)",
+					i, ours[i].lat, ours[i].lon, eccs[i].lat, eccs[i].lon, latErr, lonErr)
 			}
 			badCount++
 		}

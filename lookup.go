@@ -236,37 +236,42 @@ func nearestIndexRotatedLatLon(t Template31, lat, lon float64) (idx int, nearLat
 	// Convert target geographic coordinates to rotated coordinates.
 	rLat, rLon := coordRotate(lat, lon, angleOfRot, southPoleLat, southPoleLon)
 
-	// Grid parameters in rotated space (same layout as Template30).
-	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
-	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
-	lat2 := float64(t.LatitudeOfLastGridPoint) * 1e-6
+	// Both GridCoordinates() and Values() now return data in canonical order
+	// (north-to-south, west-to-east). Compute index in canonical order.
+	//
+	// Canonical layout: row 0 = northernmost rotated lat, row nj-1 = southernmost.
+	// col 0 = westernmost rotated lon, col ni-1 = easternmost.
+	rawLat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
+	rawLon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
+	rawLat2 := float64(t.LatitudeOfLastGridPoint) * 1e-6
+	rawLon2 := float64(t.LongitudeOfLastGridPoint) * 1e-6
 
 	var di, dj float64
 	if t.IDirectionIncrement != 0 && t.IDirectionIncrement != 0xFFFFFFFF {
 		di = float64(t.IDirectionIncrement) * 1e-6
 	} else if ni > 1 {
-		lon2 := float64(t.LongitudeOfLastGridPoint) * 1e-6
-		di = (lon2 - lon1) / float64(ni-1)
+		di = math.Abs(rawLon2-rawLon1) / float64(ni-1)
 	}
 	if t.JDirectionIncrement != 0 && t.JDirectionIncrement != 0xFFFFFFFF {
 		dj = float64(t.JDirectionIncrement) * 1e-6
 	} else if nj > 1 {
-		dj = math.Abs(lat2-lat1) / float64(nj-1)
-	}
-	if lat2 < lat1 {
-		dj = -dj
+		dj = math.Abs(rawLat2-rawLat1) / float64(nj-1)
 	}
 
-	// Direct index computation in rotated space.
-	fi := (rLon - lon1) / di
-	fj := (rLat - lat1) / dj
+	// Canonical origin: NW corner of rotated grid.
+	canonLat0 := math.Max(rawLat1, rawLat2) // northernmost
+	canonLon0 := math.Min(rawLon1, rawLon2) // westernmost
+	canonDj := -dj                           // south = increasing j
+
+	fi := (rLon - canonLon0) / di
+	fj := (rLat - canonLat0) / canonDj
 
 	// Handle longitude wrapping.
 	if di > 0 {
 		if fi < -0.5 {
-			fi = (rLon + 360 - lon1) / di
+			fi = (rLon + 360 - canonLon0) / di
 		} else if fi > float64(ni)-0.5 {
-			fi = (rLon - 360 - lon1) / di
+			fi = (rLon - 360 - canonLon0) / di
 		}
 	}
 
@@ -275,9 +280,9 @@ func nearestIndexRotatedLatLon(t Template31, lat, lon float64) (idx int, nearLat
 	i = clamp(i, 0, ni-1)
 	j = clamp(j, 0, nj-1)
 
-	// The nearest point in rotated space — unrotate back to geographic.
-	nearRotLat := lat1 + float64(j)*dj
-	nearRotLon := lon1 + float64(i)*di
+	// The nearest point in canonical rotated space — unrotate to geographic.
+	nearRotLat := canonLat0 + float64(j)*canonDj
+	nearRotLon := canonLon0 + float64(i)*di
 	nearLat, nearLon = coordUnrotate(nearRotLat, nearRotLon, angleOfRot, southPoleLat, southPoleLon)
 
 	idx = j*ni + i
@@ -299,34 +304,35 @@ func bilinearRotatedLatLon(t Template31, values []float64, lat, lon float64) (fl
 
 	rLat, rLon := coordRotate(lat, lon, angleOfRot, southPoleLat, southPoleLon)
 
-	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
-	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
-	lat2 := float64(t.LatitudeOfLastGridPoint) * 1e-6
+	bRawLat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
+	bRawLon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
+	bRawLat2 := float64(t.LatitudeOfLastGridPoint) * 1e-6
+	bRawLon2 := float64(t.LongitudeOfLastGridPoint) * 1e-6
 
 	var di, dj float64
 	if t.IDirectionIncrement != 0 && t.IDirectionIncrement != 0xFFFFFFFF {
 		di = float64(t.IDirectionIncrement) * 1e-6
 	} else if ni > 1 {
-		lon2 := float64(t.LongitudeOfLastGridPoint) * 1e-6
-		di = (lon2 - lon1) / float64(ni-1)
+		di = math.Abs(bRawLon2-bRawLon1) / float64(ni-1)
 	}
 	if t.JDirectionIncrement != 0 && t.JDirectionIncrement != 0xFFFFFFFF {
 		dj = float64(t.JDirectionIncrement) * 1e-6
 	} else if nj > 1 {
-		dj = math.Abs(lat2-lat1) / float64(nj-1)
-	}
-	if lat2 < lat1 {
-		dj = -dj
+		dj = math.Abs(bRawLat2-bRawLat1) / float64(nj-1)
 	}
 
-	fi := (rLon - lon1) / di
-	fj := (rLat - lat1) / dj
+	canonLat0 := math.Max(bRawLat1, bRawLat2)
+	canonLon0 := math.Min(bRawLon1, bRawLon2)
+	canonDj := -dj
+
+	fi := (rLon - canonLon0) / di
+	fj := (rLat - canonLat0) / canonDj
 
 	if di > 0 {
 		if fi < 0 {
-			fi = (rLon + 360 - lon1) / di
+			fi = (rLon + 360 - canonLon0) / di
 		} else if fi >= float64(ni) {
-			fi = (rLon - 360 - lon1) / di
+			fi = (rLon - 360 - canonLon0) / di
 		}
 	}
 
