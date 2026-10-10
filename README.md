@@ -131,6 +131,29 @@ if err != nil {
 fmt.Printf("Interpolated value: %.2f\n", interpolated)
 ```
 
+### Sample many points or many fields (rendering, regridding)
+
+`BilinearValue` unpacks the whole field on every call. To interpolate many
+points, or the same points across many fields on one grid, build a
+`Sampler` once and reuse its weights:
+
+```go
+s, err := grib2.NewSampler(field)          // geometry only, no data
+w, err := s.Weights(39.7392, -104.9903)    // corners + fractions, reusable
+
+temp, _ := tempField.Values()
+wind, _ := windField.Values()
+t, err := w.Interpolate(temp)              // bit-identical to BilinearValue
+u, err := w.Interpolate(wind)              // same weights, another field
+kind := ptype[w.NearestCorner()]           // categorical fields: no averaging
+
+if !s.Matches(otherField) { /* different grid: build another Sampler */ }
+```
+
+Measured on a rotated RDPS grid: about 0.2 µs per point, against roughly
+400 µs per `BilinearValue` call. `Weights` reports `Outside` for points
+beyond the grid edge, where the result is clamped to the edge cell.
+
 ### Write a GRIB2 file
 
 ```go
@@ -243,6 +266,10 @@ Message
 | `GridCoordinates() (lats, lons []float64, error)` | Lat/lon of every grid point in data order |
 | `NearestValue(lat, lon float64)` | Value at closest grid point (O(1) for regular grids) |
 | `BilinearValue(lat, lon float64)` | Bilinear interpolation from 4 surrounding points |
+| `NewSampler(f *Field) (*Sampler, error)` | Reusable bilinear locator for f's grid (3.0, 3.1, regular 3.40) |
+| `(*Sampler).Weights(lat, lon float64)` | Four corner indices and fractions; apply to any field on the grid |
+| `(BilinearWeights).Interpolate(values)` | Bilinear value, bit-identical to `BilinearValue` |
+| `(BilinearWeights).NearestCorner()` | Index of the heaviest corner, for categorical fields |
 
 ### Writing
 
