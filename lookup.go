@@ -141,10 +141,20 @@ func nearestIndexLatLon(t Template30, lat, lon float64) (idx int, nearLat, nearL
 // bilinearLatLon performs bilinear interpolation on a Template30 regular
 // lat/lon grid.
 func bilinearLatLon(t Template30, values []float64, lat, lon float64) (float64, error) {
+	w, err := bilinearWeightsLatLon(t, lat, lon)
+	if err != nil {
+		return 0, err
+	}
+	return w.Interpolate(values)
+}
+
+// bilinearWeightsLatLon locates the four corners and fractional offsets of
+// (lat, lon) on a Template30 regular lat/lon grid.
+func bilinearWeightsLatLon(t Template30, lat, lon float64) (BilinearWeights, error) {
 	ni := int(t.Ni)
 	nj := int(t.Nj)
 	if ni < 2 || nj < 2 {
-		return 0, fmt.Errorf("grib2: grid too small for bilinear interpolation: Ni=%d, Nj=%d", ni, nj)
+		return BilinearWeights{}, fmt.Errorf("grib2: grid too small for bilinear interpolation: Ni=%d, Nj=%d", ni, nj)
 	}
 
 	lat1, lon1, di, dj := latLonGridParams(t)
@@ -166,53 +176,7 @@ func bilinearLatLon(t Template30, values []float64, lat, lon float64) (float64, 
 		}
 	}
 
-	// Floor indices for the surrounding cell
-	i0 := int(math.Floor(fi))
-	j0 := int(math.Floor(fj))
-
-	// Fractional offsets within the cell
-	xFrac := fi - float64(i0)
-	yFrac := fj - float64(j0)
-
-	// Clamp so we can always access (i0, j0), (i0+1, j0), (i0, j0+1), (i0+1, j0+1)
-	if i0 < 0 {
-		i0 = 0
-		xFrac = 0
-	}
-	if i0 >= ni-1 {
-		i0 = ni - 2
-		xFrac = 1
-	}
-	if j0 < 0 {
-		j0 = 0
-		yFrac = 0
-	}
-	if j0 >= nj-1 {
-		j0 = nj - 2
-		yFrac = 1
-	}
-
-	i1 := i0 + 1
-	j1 := j0 + 1
-
-	// Fetch the four corner values
-	v00 := gridVal(values, j0*ni+i0)
-	v10 := gridVal(values, j0*ni+i1)
-	v01 := gridVal(values, j1*ni+i0)
-	v11 := gridVal(values, j1*ni+i1)
-
-	// Check for NaN (missing) values in corners
-	if math.IsNaN(v00) || math.IsNaN(v10) || math.IsNaN(v01) || math.IsNaN(v11) {
-		return 0, fmt.Errorf("grib2: BilinearValue: one or more surrounding grid points are missing (NaN)")
-	}
-
-	// Bilinear interpolation
-	result := v00*(1-xFrac)*(1-yFrac) +
-		v10*xFrac*(1-yFrac) +
-		v01*(1-xFrac)*yFrac +
-		v11*xFrac*yFrac
-
-	return result, nil
+	return cornerWeights(fi, fj, ni, nj), nil
 }
 
 // latLonGridParams extracts the origin, step, and direction from a Template30.
@@ -391,10 +355,20 @@ func nearestIndexRotatedLatLon(t Template31, lat, lon float64) (idx int, nearLat
 // nearestIndexRotatedLatLon, with bilinear weights computed in rotated
 // space (which is correct since the grid IS regular in rotated space).
 func bilinearRotatedLatLon(t Template31, values []float64, lat, lon float64) (float64, error) {
+	w, err := bilinearWeightsRotatedLatLon(t, lat, lon)
+	if err != nil {
+		return 0, err
+	}
+	return w.Interpolate(values)
+}
+
+// bilinearWeightsRotatedLatLon locates the four corners and fractional
+// offsets of (lat, lon) on a Template31 rotated lat/lon grid.
+func bilinearWeightsRotatedLatLon(t Template31, lat, lon float64) (BilinearWeights, error) {
 	ni := int(t.Ni)
 	nj := int(t.Nj)
 	if ni < 2 || nj < 2 {
-		return 0, fmt.Errorf("grib2: grid too small for bilinear interpolation: Ni=%d, Nj=%d", ni, nj)
+		return BilinearWeights{}, fmt.Errorf("grib2: grid too small for bilinear interpolation: Ni=%d, Nj=%d", ni, nj)
 	}
 
 	southPoleLat := float64(t.LatitudeOfSouthernPole) * 1e-6
@@ -422,38 +396,7 @@ func bilinearRotatedLatLon(t Template31, values []float64, lat, lon float64) (fl
 		}
 	}
 
-	i0 := int(math.Floor(fi))
-	j0 := int(math.Floor(fj))
-	xFrac := fi - float64(i0)
-	yFrac := fj - float64(j0)
-
-	if i0 < 0 {
-		i0 = 0
-		xFrac = 0
-	}
-	if j0 < 0 {
-		j0 = 0
-		yFrac = 0
-	}
-	if i0 >= ni-1 {
-		i0 = ni - 2
-		xFrac = 1
-	}
-	if j0 >= nj-1 {
-		j0 = nj - 2
-		yFrac = 1
-	}
-
-	v00 := gridVal(values, j0*ni+i0)
-	v10 := gridVal(values, j0*ni+i0+1)
-	v01 := gridVal(values, (j0+1)*ni+i0)
-	v11 := gridVal(values, (j0+1)*ni+i0+1)
-
-	if math.IsNaN(v00) || math.IsNaN(v10) || math.IsNaN(v01) || math.IsNaN(v11) {
-		return 0, fmt.Errorf("grib2: BilinearValue: one or more surrounding grid points are missing (NaN)")
-	}
-
-	return v00*(1-xFrac)*(1-yFrac) + v10*xFrac*(1-yFrac) + v01*(1-xFrac)*yFrac + v11*xFrac*yFrac, nil
+	return cornerWeights(fi, fj, ni, nj), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -498,10 +441,21 @@ func nearestIndexRegularGaussian(t Template340, lat, lon float64) (int, float64,
 }
 
 func bilinearRegularGaussian(t Template340, values []float64, lat, lon float64) (float64, error) {
+	w, err := bilinearWeightsRegularGaussian(t, lat, lon)
+	if err != nil {
+		return 0, err
+	}
+	return w.Interpolate(values)
+}
+
+// bilinearWeightsRegularGaussian locates the four corners and fractional
+// offsets of (lat, lon) on a regular Template340 Gaussian grid, using the
+// same evenly-spaced latitude approximation as before.
+func bilinearWeightsRegularGaussian(t Template340, lat, lon float64) (BilinearWeights, error) {
 	ni := int(t.Ni)
 	nj := int(t.Nj)
 	if ni < 2 || nj < 2 {
-		return 0, fmt.Errorf("grib2: grid too small for bilinear interpolation: Ni=%d, Nj=%d", ni, nj)
+		return BilinearWeights{}, fmt.Errorf("grib2: grid too small for bilinear interpolation: Ni=%d, Nj=%d", ni, nj)
 	}
 
 	lat1 := float64(t.LatitudeOfFirstGridPoint) / 1e6
@@ -521,47 +475,7 @@ func bilinearRegularGaussian(t Template340, values []float64, lat, lon float64) 
 	fi := (lon - lon1) / di
 	fj := (lat - lat1) / dj
 
-	i0 := int(math.Floor(fi))
-	j0 := int(math.Floor(fj))
-
-	xFrac := fi - float64(i0)
-	yFrac := fj - float64(j0)
-
-	if i0 < 0 {
-		i0 = 0
-		xFrac = 0
-	}
-	if i0 >= ni-1 {
-		i0 = ni - 2
-		xFrac = 1
-	}
-	if j0 < 0 {
-		j0 = 0
-		yFrac = 0
-	}
-	if j0 >= nj-1 {
-		j0 = nj - 2
-		yFrac = 1
-	}
-
-	i1 := i0 + 1
-	j1 := j0 + 1
-
-	v00 := gridVal(values, j0*ni+i0)
-	v10 := gridVal(values, j0*ni+i1)
-	v01 := gridVal(values, j1*ni+i0)
-	v11 := gridVal(values, j1*ni+i1)
-
-	if math.IsNaN(v00) || math.IsNaN(v10) || math.IsNaN(v01) || math.IsNaN(v11) {
-		return 0, fmt.Errorf("grib2: BilinearValue: one or more surrounding grid points are missing (NaN)")
-	}
-
-	result := v00*(1-xFrac)*(1-yFrac) +
-		v10*xFrac*(1-yFrac) +
-		v01*(1-xFrac)*yFrac +
-		v11*xFrac*yFrac
-
-	return result, nil
+	return cornerWeights(fi, fj, ni, nj), nil
 }
 
 // ---------------------------------------------------------------------------
