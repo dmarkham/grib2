@@ -11,7 +11,8 @@ import (
 
 // libaecDataDir holds the CCSDS 121.0-B-2 test vectors shipped with libaec.
 // reference/ is not committed, so the test skips when the files are absent.
-var libaecDataDir = filepath.Join("..", "..", "reference", "libaec", "data", "121B2TestData")
+// libaecDataDir is libaec's data/121B2TestData (the CCSDS 121.0-B test vectors).
+var libaecDataDir = filepath.Join("testdata", "121B2TestData")
 
 // sampleVector is one row of libaec's tests/sampledata.sh.
 type sampleVector struct {
@@ -96,7 +97,7 @@ func readLibaecLSB(b []byte, bps int) []int32 {
 // decodes to its .dat, and the "codec" rows encode byte-identically.
 func TestLibaecSampleData(t *testing.T) {
 	if _, err := os.Stat(libaecDataDir); err != nil {
-		t.Skipf("libaec sample data not present: %v", err)
+		t.Fatalf("libaec sample data missing: %v", err)
 	}
 	for _, sv := range libaecSampleVectors() {
 		name := filepath.Base(sv.rz)

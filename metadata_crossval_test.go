@@ -1,11 +1,7 @@
 package grib2
 
 import (
-	"os/exec"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"testing"
+	"math"
 )
 
 // metaKey reads one eccodes key from our decoded field. width is the octet
@@ -16,6 +12,9 @@ type metaKey struct {
 	width int
 	get   func(m *Message, f *Field) (v int64, ok bool)
 }
+
+// optionalMetaKeys are keys we only compute for some fields.
+var optionalMetaKeys = map[string]bool{"level": true}
 
 func productKeys() []metaKey {
 	t40 := func(f *Field) *Template40 { return f.extractTemplate40() }
@@ -144,90 +143,21 @@ func productKeys() []metaKey {
 			}
 			return 0, false
 		}},
+		{"level", 0, func(m *Message, f *Field) (int64, bool) {
+			// eccodes' integer level: hPa for isobaric surfaces.
+			if t := t40(f); t != nil && t.TypeOfFirstFixedSurface == 100 && t.ScaledValueOfFirstSurface != missingUint32 {
+				hpa, err := f.SurfaceLevelHPa()
+				return int64(math.Round(hpa)), err == nil
+			}
+			return 0, false
+		}},
+		{"section7Length", 4, func(m *Message, f *Field) (int64, bool) { return int64(5 + len(f.Section7.Data)), true }},
 		{"typeOfStatisticalProcessing", 1, func(m *Message, f *Field) (int64, bool) {
 			if tr := timeRange(f); len(tr) > 0 {
 				return int64(tr[len(tr)-1].TypeOfStatisticalProcessing), true
 			}
 			return 0, false
 		}},
-	}
-}
-
-// TestEccodes_ProductMetadata compares identification, product and
-// representation keys with eccodes for every field of every fixture
-// (eccodes tests/grib_step.sh, grib_sub_hourly.sh, grib_neg_fctime.sh,
-// grib2_templates.sh, grib_level.sh).
-func TestEccodes_ProductMetadata(t *testing.T) {
-	if !eccodesAvailable(t) {
-		t.Skip("eccodes not available")
-	}
-	keys := productKeys()
-	var spec []string
-	for _, k := range keys {
-		spec = append(spec, k.name+":i")
-	}
-	for _, p := range allFixturePaths(t) {
-		t.Run(p, func(t *testing.T) {
-			var fields []*Field
-			var msgs []*Message
-			for _, m := range decodeAll(t, p) {
-				for i := range m.Fields {
-					fields = append(fields, &m.Fields[i])
-					msgs = append(msgs, m)
-				}
-			}
-			cmd := exec.Command(filepath.Join("reference", "eccodes-install", "bin", "grib_get"), "-f", "-p", strings.Join(spec, ","), p)
-			cmd.Env = eccodesEnv()
-			var stderr strings.Builder
-			cmd.Stderr = &stderr
-			out, err := cmd.Output()
-			if strings.Contains(stderr.String(), "ECCODES ERROR") {
-				if _, known := decodeExpectedErrors[p]; !known {
-					t.Fatalf("grib_get reported: %s", stderr.String())
-				}
-			}
-			if strings.TrimSpace(string(out)) == "" {
-				if _, known := decodeExpectedErrors[p]; known {
-					t.Skip("eccodes cannot open this file either")
-				}
-				t.Fatalf("grib_get printed nothing: %v", err)
-			}
-			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-			if len(lines) != len(fields) {
-				t.Fatalf("eccodes lists %d fields, we decode %d", len(lines), len(fields))
-			}
-			for i, line := range lines {
-				vals := strings.Fields(line)
-				if len(vals) != len(keys) {
-					t.Fatalf("field %d: %d eccodes values for %d keys: %q", i, len(vals), len(keys), line)
-				}
-				for k, key := range keys {
-					ours, ok := key.get(msgs[i], fields[i])
-					ev := vals[k]
-					switch {
-					case ev == "not_found":
-						continue // eccodes has no such key for this template
-					case !ok:
-						if _, raw := fields[i].Section4.Template.(*RawProductTemplate); raw {
-							continue // we keep unparsed templates raw
-						}
-						t.Errorf("field %d: eccodes has %s=%s, we have no value", i, key.name, ev)
-					case ev == "MISSING":
-						if !isAllOnes(ours, key.width) {
-							t.Errorf("field %d: %s = %d, eccodes MISSING", i, key.name, ours)
-						}
-					default:
-						e, err := strconv.ParseInt(ev, 10, 64)
-						if err != nil {
-							t.Fatalf("field %d: %s=%q", i, key.name, ev)
-						}
-						if e != ours {
-							t.Errorf("field %d: %s = %d, eccodes %d", i, key.name, ours, e)
-						}
-					}
-				}
-			}
-		})
 	}
 }
 

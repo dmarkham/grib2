@@ -7,10 +7,7 @@ import (
 	"io"
 	"math"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -37,20 +34,6 @@ func decodeAll(t *testing.T, path string) []*Message {
 }
 
 func isEOF(err error) bool { return errors.Is(err, io.EOF) }
-
-// eccodesInts runs grib_get -p key on file and returns one int per field.
-func eccodesInts(t *testing.T, file, key string) []int64 {
-	t.Helper()
-	var out []int64
-	for _, line := range runGribGet(t, file, "-p", key+":i") {
-		v, err := strconv.ParseInt(strings.TrimSpace(line), 10, 64)
-		if err != nil {
-			t.Fatalf("grib_get %s %s: %q: %v", key, file, line, err)
-		}
-		out = append(out, v)
-	}
-	return out
-}
 
 // TestSection4_CoordinateValues pins the NV coordinate values (the pv array of
 // hybrid model levels) that follow the product template (upstream eccodes
@@ -100,12 +83,6 @@ func TestSection4_CoordinateValues(t *testing.T) {
 					t.Errorf("pv[0]=%v pv[last]=%v, want %v %v", pv(0), pv(tt.nv-1), tt.pv0, tt.pvLast)
 				}
 			}
-			if eccodesAvailable(t) {
-				nv := eccodesInts(t, tt.file, "NV")
-				if nv[0] != int64(tt.nv) {
-					t.Errorf("eccodes NV = %d, want %d", nv[0], tt.nv)
-				}
-			}
 		})
 	}
 }
@@ -141,11 +118,6 @@ func TestForecastTime_NegativeSignMagnitude(t *testing.T) {
 			got := f.extractTemplate40().ForecastTime
 			if got != tt.want {
 				t.Errorf("ForecastTime = %d, want %d", got, tt.want)
-			}
-			if eccodesAvailable(t) {
-				if e := eccodesInts(t, tt.file, "forecastTime")[0]; e != int64(tt.want) {
-					t.Errorf("eccodes forecastTime = %d", e)
-				}
 			}
 		})
 	}
@@ -185,11 +157,6 @@ func TestSurfaceLevel_MissingScaleFactor(t *testing.T) {
 	}
 	if lvl != 11 {
 		t.Errorf("SurfaceLevel = %v, want 11", lvl)
-	}
-	if eccodesAvailable(t) {
-		if e := eccodesInts(t, file, "level")[0]; e != 11 {
-			t.Errorf("eccodes level = %d", e)
-		}
 	}
 }
 
@@ -233,19 +200,14 @@ func TestSurfaceAccessors_AllProductTemplates(t *testing.T) {
 				t.Fatal(err)
 			}
 			tmpl := f.extractTemplate40()
+			// eccodes' typeOfFirstFixedSurface and level for these files are
+			// checked by TestEccodesReference_Check.
+			if typ != tmpl.TypeOfFirstFixedSurface {
+				t.Errorf("SurfaceType = %d, template says %d", typ, tmpl.TypeOfFirstFixedSurface)
+			}
 			if tmpl.ScaledValueOfFirstSurface == missingUint32 {
 				if !math.IsNaN(lvl) {
 					t.Errorf("missing scaled value: SurfaceLevel = %v, want NaN", lvl)
-				}
-			}
-			if eccodesAvailable(t) {
-				if e := eccodesInts(t, file, "typeOfFirstFixedSurface")[0]; e != int64(typ) {
-					t.Errorf("SurfaceType = %d, eccodes %d", typ, e)
-				}
-				if !math.IsNaN(lvl) {
-					if e := eccodesInts(t, file, "level")[0]; float64(e) != math.Trunc(lvl) {
-						t.Errorf("SurfaceLevel = %v, eccodes level %d", lvl, e)
-					}
 				}
 			}
 		})
@@ -275,11 +237,6 @@ func TestSection1_ReservedOctets(t *testing.T) {
 	if buf.Len() != 24 {
 		t.Errorf("rewrote %d bytes, want 24", buf.Len())
 	}
-	if eccodesAvailable(t) {
-		if e := eccodesInts(t, file, "section1Length")[0]; e != 24 {
-			t.Errorf("eccodes section1Length = %d", e)
-		}
-	}
 }
 
 // TestMultiField_SharedSection3 decodes eccodes data/multi_created.grib2: one
@@ -295,18 +252,7 @@ func TestMultiField_SharedSection3(t *testing.T) {
 	if fields[0].SharesSection3 {
 		t.Error("field 0 must own its Section 3")
 	}
-	var refMin, refMax []float64
-	if eccodesAvailable(t) {
-		for _, line := range runGribGet(t, file, "-F", "%.10g", "-p", "min,max") {
-			p := strings.Fields(line)
-			mn, _ := strconv.ParseFloat(p[0], 64)
-			mx, _ := strconv.ParseFloat(p[1], 64)
-			refMin, refMax = append(refMin, mn), append(refMax, mx)
-		}
-		if len(refMin) != 21 {
-			t.Fatalf("eccodes sees %d fields", len(refMin))
-		}
-	}
+	// Each field's values are compared with eccodes by TestEccodesReference_Check.
 	for i, f := range fields {
 		if i > 0 && !f.SharesSection3 {
 			t.Errorf("field %d: SharesSection3 = false", i)
@@ -314,16 +260,8 @@ func TestMultiField_SharedSection3(t *testing.T) {
 		if !reflect.DeepEqual(f.Section3, fields[0].Section3) {
 			t.Errorf("field %d: Section3 differs from field 0", i)
 		}
-		vals, err := f.Values()
-		if err != nil {
+		if _, err := f.Values(); err != nil {
 			t.Fatalf("field %d: %v", i, err)
-		}
-		if refMin != nil {
-			mn, mx, _ := stats(vals)
-			if math.Abs(mn-refMin[i]) > 1e-6*math.Max(1, math.Abs(refMin[i])) ||
-				math.Abs(mx-refMax[i]) > 1e-6*math.Max(1, math.Abs(refMax[i])) {
-				t.Errorf("field %d: min/max %v/%v, eccodes %v/%v", i, mn, mx, refMin[i], refMax[i])
-			}
 		}
 	}
 }
@@ -571,48 +509,4 @@ func TestValues_CountMismatches(t *testing.T) {
 			t.Error("expected error")
 		}
 	})
-}
-
-// TestEccodes_CoordinateValuesMatch compares every pv value with eccodes'
-// pv array (grib_filter print [pv]).
-func TestEccodes_CoordinateValuesMatch(t *testing.T) {
-	if !eccodesAvailable(t) {
-		t.Skip("eccodes not available")
-	}
-	filt := filepath.Join(t.TempDir(), "pv.filt")
-	if err := os.WriteFile(filt, []byte(`print "[pv%.9g!1]";`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	for _, file := range []string{"testdata/upstream/pv_pdt8.grib2", "testdata/upstream/raw_pdt40_nv.grib2",
-		// test_uuid.grib2's 6 coordinate values describe a general vertical
-		// coordinate, which eccodes does not expose as pv.
-		"testdata/reduced_gaussian_model_level.grib2"} {
-		cmd := exec.Command(filepath.Join("reference", "eccodes-install", "bin", "grib_filter"), filt, file)
-		cmd.Env = eccodesEnv()
-		out, err := cmd.Output()
-		if err != nil {
-			t.Fatalf("%s: %v", file, err)
-		}
-		var want []float64
-		for _, f := range strings.Fields(string(out)) {
-			v, err := strconv.ParseFloat(f, 64)
-			if err != nil {
-				t.Fatalf("%s: %q", file, f)
-			}
-			want = append(want, v)
-		}
-		s4 := decodeAll(t, file)[0].Fields[0].Section4
-		if len(want) > int(s4.NV) && len(want)%int(s4.NV) == 0 {
-			want = want[:s4.NV] // one array per message; compare the first
-		}
-		if len(want) != int(s4.NV) {
-			t.Fatalf("%s: eccodes has %d pv values, NV is %d", file, len(want), s4.NV)
-		}
-		for i, w := range want {
-			got := float64(math.Float32frombits(binary.BigEndian.Uint32(s4.CoordinateValues[4*i:])))
-			if math.Abs(got-w) > 1e-6*math.Max(1, math.Abs(w)) {
-				t.Errorf("%s: pv[%d] = %v, eccodes %v", file, i, got, w)
-			}
-		}
-	}
 }

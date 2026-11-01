@@ -170,13 +170,6 @@ func TestIntegration_RDPSIsobaricLevels(t *testing.T) {
 					pct, outOfRange, len(values))
 			}
 
-			// Cross-validate with eccodes if available
-			if eccodesAvailable(t) {
-				lines := runGribGet(t, tt.file, "-p", "level")
-				if len(lines) > 0 {
-					t.Logf("eccodes level: %s", lines[0])
-				}
-			}
 		})
 	}
 }
@@ -378,67 +371,11 @@ func TestIntegration_GFSGridCoordinates(t *testing.T) {
 		t.Fatalf("Values: %v", err)
 	}
 
-	if len(values) != len(lats) {
-		t.Errorf("len(Values()) = %d, len(GridCoordinates) = %d", len(values), len(lats))
+	if len(values) != len(lats) || len(lons) != len(lats) {
+		t.Errorf("len(Values()) = %d, len(GridCoordinates) = %d/%d", len(values), len(lats), len(lons))
 	}
-
-	// Cross-validate coordinates against eccodes grib_get_data.
-	// Note: eccodes grib_get_data outputs values in the file's scanning order
-	// (south-to-north for mode 64), while our GridCoordinates + Values use
-	// canonical order (north-to-south). So we match coordinate-value pairs
-	// by building a map keyed on approximate (lat,lon).
-	if eccodesAvailable(t) {
-		refLats, refLons, refVals := runGribGetDataFull(t, file, 1)
-
-		if len(refLats) != len(lats) {
-			t.Fatalf("point count: ours=%d, eccodes=%d", len(lats), len(refLats))
-		}
-
-		// Build a map from rounded coordinates to eccodes value
-		type coordKey struct {
-			lat, lon int // in 0.001 degree units
-		}
-		ecMap := make(map[coordKey]float64, len(refLats))
-		for i := range refLats {
-			k := coordKey{
-				lat: int(math.Round(refLats[i] * 1000)),
-				lon: int(math.Round(refLons[i] * 1000)),
-			}
-			ecMap[k] = refVals[i]
-		}
-
-		// Check that every point in our output has a matching eccodes point
-		mismatches := 0
-		for i := range lats {
-			ourLon := lons[i]
-			if ourLon < 0 {
-				ourLon += 360
-			}
-			k := coordKey{
-				lat: int(math.Round(lats[i] * 1000)),
-				lon: int(math.Round(ourLon * 1000)),
-			}
-			ecVal, ok := ecMap[k]
-			if !ok {
-				if mismatches < 5 {
-					t.Errorf("point %d: our coord (%.3f, %.3f) not found in eccodes output",
-						i, lats[i], lons[i])
-				}
-				mismatches++
-				continue
-			}
-			if math.Abs(values[i]-ecVal) > 1e-4 {
-				if mismatches < 5 {
-					t.Errorf("point %d at (%.3f, %.3f): ours=%e, eccodes=%e",
-						i, lats[i], lons[i], values[i], ecVal)
-				}
-				mismatches++
-			}
-		}
-		if mismatches > 0 {
-			t.Errorf("total coordinate/value mismatches: %d/%d", mismatches, len(lats))
-		}
-	}
+	// Each point's coordinates and value are checked against eccodes by
+	// TestEccodesReference_Check.
 }
 
 // ---------------------------------------------------------------------------

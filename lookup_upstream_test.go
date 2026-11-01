@@ -3,12 +3,9 @@ package grib2
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -255,89 +252,6 @@ func TestNearestValue_LongitudeWraps(t *testing.T) {
 				t.Errorf("%s: NearestValue(30, %v) = %d, want %d", file, 10+360*float64(k), idx, want)
 			}
 		}
-	}
-}
-
-// eccodesNearest returns the nearest point eccodes chooses (grib_ls -l).
-func eccodesNearest(t *testing.T, file string, lat, lon float64) (nLat, nLon, val float64, ok bool) {
-	t.Helper()
-	cmd := exec.Command(filepath.Join("reference", "eccodes-install", "bin", "grib_ls"),
-		"-j", "-w", "count=1", "-l", fmt.Sprintf("%v,%v,1", lat, lon), "-p", "count", file)
-	cmd.Env = eccodesEnv()
-	out, err := cmd.Output()
-	if err != nil {
-		return 0, 0, 0, false // eccodes refuses some points outside the grid
-	}
-	var res []struct {
-		Neighbours []struct {
-			Latitude, Longitude, Value float64
-		} `json:"neighbours"`
-	}
-	if err := json.Unmarshal(out, &res); err != nil || len(res) == 0 || len(res[0].Neighbours) == 0 {
-		t.Fatalf("grib_ls -l %s: %v: %s", file, err, out)
-	}
-	n := res[0].Neighbours[0]
-	return n.Latitude, n.Longitude, n.Value, true
-}
-
-// TestEccodes_NearestValueReferencePoints compares NearestValue with eccodes
-// grib_ls -l at the points upstream tests use and at awkward places (poles,
-// the 0/360 seam, outside the grid), on every kind of grid.
-func TestEccodes_NearestValueReferencePoints(t *testing.T) {
-	if !eccodesAvailable(t) {
-		t.Skip("eccodes not available")
-	}
-	queries := [][2]float64{{51.5, 10}, {-40, 15}, {79, 203}, {0, 0}, {34, 241}, {89.9, 5}, {-89.9, 355},
-		{10, 359.9}, {10, -5}, {45, 399.6}, {-20, 366.3}}
-	for _, file := range []string{
-		"testdata/sample.grib2",
-		"testdata/gfs_multifield.grib2",
-		"testdata/grid_complex_spatial_differencing.grib2",
-		"testdata/rdps_surface.grib2",
-		"testdata/ccsds.grib2",
-		"testdata/jpeg.grib2",
-		"testdata/regular_gaussian_surface.grib2",
-		"testdata/reduced_gaussian_pressure_level.grib2",
-		"testdata/reduced_gaussian_surface.grib2",
-		"testdata/mercator.grib2",
-		"testdata/upstream/ll_swapx.grib2",
-		"testdata/upstream/ll_swapy.grib2",
-		"testdata/upstream/gg_swapy.grib2",
-		"testdata/upstream/tigge_egrr_sfc_2t.grib2",
-		"testdata/upstream/reduced_gaussian_sub_area.grib2",
-		"testdata/upstream/reduced_latlon_surface_constant.grib2",
-		"testdata/upstream/lambert_south.grib2",
-	} {
-		t.Run(file, func(t *testing.T) {
-			f := decodeAll(t, file)[0].Fields[0]
-			for _, q := range queries {
-				v, _, nLat, nLon, err := f.NearestValue(q[0], q[1])
-				if err != nil {
-					t.Fatalf("NearestValue(%v): %v", q, err)
-				}
-				eLat, eLon, eVal, ok := eccodesNearest(t, file, q[0], q[1])
-				if !ok {
-					continue
-				}
-				// eccodes prints the neighbour to 2 decimals in the JSON, so
-				// compare positions by distance. Ours must be at least as
-				// close as eccodes' choice (its search is approximate for
-				// points outside a projected grid).
-				d := haversineDeg(nLat, nLon, eLat, eLon) * 180 / math.Pi
-				dq := haversineDeg(q[0], q[1], nLat, nLon) * 180 / math.Pi
-				de := haversineDeg(q[0], q[1], eLat, eLon) * 180 / math.Pi
-				if d > 0.01 {
-					if dq > de+0.01 {
-						t.Errorf("query %v: ours (%.4f, %.4f) = %v is %.4f deg away, eccodes (%.4f, %.4f) = %v is %.4f",
-							q, nLat, nLon, v, dq, eLat, eLon, eVal, de)
-					}
-					continue
-				}
-				if !(math.IsNaN(v) || math.Abs(v-eVal) <= 1e-3*math.Max(1, math.Abs(eVal))) {
-					t.Errorf("query %v: value %v, eccodes %v", q, v, eVal)
-				}
-			}
-		})
 	}
 }
 

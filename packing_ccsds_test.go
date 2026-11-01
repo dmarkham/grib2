@@ -5,7 +5,6 @@ import (
 	"math"
 	"math/rand"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -426,47 +425,6 @@ func TestUnpackCCSDS_BitsPerValueOver32(t *testing.T) {
 	tm := Template542{Template50: Template50{BitsPerValue: 33}, CcsdsFlags: 12, CcsdsBlockSize: 32, CcsdsRsi: 128}
 	if _, err := UnpackCCSDS([]byte{1, 2, 3, 4}, tm, 4); err == nil {
 		t.Fatal("want error for bpv 33")
-	}
-}
-
-// TestUnpackCCSDS_EccodesRuntime cross-checks the IFS CCSDS samples (flags 14)
-// against grib_get_data. It needs reference/ and the eccodes build.
-func TestUnpackCCSDS_EccodesRuntime(t *testing.T) {
-	getData := "reference/eccodes-install/bin/grib_get_data"
-	if _, err := os.Stat(getData); err != nil || !eccodesAvailable(t) {
-		t.Skip("eccodes build not present")
-	}
-	for _, path := range []string{
-		"reference/eccodes/ifs_samples/grib1_mlgrib2_ccsds/gg_ml.tmpl",
-		"reference/eccodes/ifs_samples/grib1_mlgrib2_ccsds/gg_sfc_grib2.tmpl",
-	} {
-		t.Run(path, func(t *testing.T) {
-			if _, err := os.Stat(path); err != nil {
-				t.Skip("sample not present")
-			}
-			out, err := exec.Command(getData, "-m", "nan", "-F%.17g", path).Output()
-			if err != nil {
-				t.Fatalf("grib_get_data: %v", err)
-			}
-			var want []float64
-			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n")[1:] {
-				fs := strings.Fields(line)
-				v, err := strconv.ParseFloat(fs[2], 64)
-				if err != nil {
-					t.Fatal(err)
-				}
-				want = append(want, v)
-			}
-			f := ccsdsReadField(t, path)
-			if fl := f.Section5.Template.(Template542).CcsdsFlags; fl != 14 {
-				t.Fatalf("CcsdsFlags = %d, want 14", fl)
-			}
-			got, err := f.Values()
-			if err != nil {
-				t.Fatal(err)
-			}
-			ccsdsCompare(t, got, want)
-		})
 	}
 }
 

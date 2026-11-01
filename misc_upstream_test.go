@@ -64,9 +64,9 @@ func TestGaussianLatitudes_LargeN(t *testing.T) {
 			}
 		}
 	}
-	samples, _ := filepath.Glob("reference/eccodes/samples/reduced_gg_pl_*_grib2.tmpl")
+	samples, _ := filepath.Glob("testdata/upstream/gaussian_pl/reduced_gg_pl_*.grib2")
 	if len(samples) == 0 {
-		t.Skip("eccodes samples not available")
+		t.Fatal("eccodes reduced Gaussian samples missing")
 	}
 	for _, s := range samples {
 		f := decodeAll(t, s)[0].Fields[0]

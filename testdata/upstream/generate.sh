@@ -279,3 +279,11 @@ cp $SAMPLES/ccsds_grib2.tmpl ccsds_sample.grib2
 cp $SAMPLES/reduced_gg_sfc_jpeg_grib2.tmpl jpeg_sample_reduced_gg.grib2
 $set_ -s productDefinitionTemplateNumber=11 $G $TMP/p11.grib2
 $set_ -s forecastTime=-2 $TMP/p11.grib2 fctime_neg2_pdt11.grib2
+
+# --- eccodes samples the tests use directly --------------------------------
+mkdir -p gaussian_pl
+for f in $SAMPLES/reduced_gg_pl_*_grib2.tmpl; do
+  n=$(basename $f _grib2.tmpl); cp $f gaussian_pl/$n.grib2
+done
+cp $ROOT/reference/eccodes/ifs_samples/grib1_mlgrib2_ccsds/gg_ml.tmpl ifs_gg_ml_ccsds.grib2
+cp $ROOT/reference/eccodes/ifs_samples/grib1_mlgrib2_ccsds/gg_sfc_grib2.tmpl ifs_gg_sfc_ccsds.grib2

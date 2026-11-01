@@ -1,12 +1,8 @@
 package grib2
 
 import (
-	"bufio"
 	"math"
 	"os"
-	"os/exec"
-	"strconv"
-	"strings"
 	"testing"
 )
 
@@ -57,14 +53,6 @@ func TestGridCoordLatLon(t *testing.T) {
 		t.Errorf("lons[last] = %f, want %f", lons[lastIdx], wantLon2)
 	}
 
-	// Validate against eccodes grib_get_data
-	t.Run("eccodes_cross_validate", func(t *testing.T) {
-		eccLats, eccLons := eccodesGetData(t, "testdata/regular_latlon_surface.grib2")
-		if eccLats == nil {
-			return // skip if eccodes not available
-		}
-		crossValidate(t, lats, lons, eccLats, eccLons, 0.01)
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -151,13 +139,6 @@ func TestGridCoordMercator(t *testing.T) {
 	t.Logf("Mercator last:  lat=%f lon=%f", lats[n-1], lons[n-1])
 
 	// Cross-validate with eccodes
-	t.Run("eccodes_cross_validate", func(t *testing.T) {
-		eccLats, eccLons := eccodesGetData(t, "testdata/mercator.grib2")
-		if eccLats == nil {
-			return
-		}
-		crossValidate(t, lats, lons, eccLats, eccLons, 0.01)
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -223,13 +204,6 @@ func TestGridCoordGaussianRegular(t *testing.T) {
 	t.Logf("Gaussian regular last:  lat=%f lon=%f", lats[n-1], lons[n-1])
 
 	// Cross-validate with eccodes
-	t.Run("eccodes_cross_validate", func(t *testing.T) {
-		eccLats, eccLons := eccodesGetData(t, "testdata/regular_gaussian_surface.grib2")
-		if eccLats == nil {
-			return
-		}
-		crossValidate(t, lats, lons, eccLats, eccLons, 0.01)
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -261,13 +235,6 @@ func TestGridCoordGaussianReduced(t *testing.T) {
 	t.Logf("Gaussian reduced last:  lat=%f lon=%f", lats[n-1], lons[n-1])
 
 	// Cross-validate with eccodes
-	t.Run("eccodes_cross_validate", func(t *testing.T) {
-		eccLats, eccLons := eccodesGetData(t, "testdata/reduced_gaussian_surface.grib2")
-		if eccLats == nil {
-			return
-		}
-		crossValidate(t, lats, lons, eccLats, eccLons, 0.01)
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -345,113 +312,6 @@ func openTestField(t *testing.T, path string) Field {
 		t.Fatalf("no fields in %s", path)
 	}
 	return msg.Fields[0]
-}
-
-// eccodesGetData runs grib_get_data and parses the lat/lon columns.
-// Returns nil slices if eccodes is not available.
-func eccodesGetData(t *testing.T, path string) ([]float64, []float64) {
-	t.Helper()
-	gribGetData := "/home/dmarkham/git/dmarkham/grib2/reference/eccodes-install/bin/grib_get_data"
-	if _, err := os.Stat(gribGetData); os.IsNotExist(err) || !eccodesAvailable(t) {
-		t.Skip("eccodes not available")
-		return nil, nil
-	}
-
-	cmd := exec.Command(gribGetData, path)
-	cmd.Env = append(os.Environ(),
-		"ECCODES_DEFINITION_PATH=/home/dmarkham/git/dmarkham/grib2/reference/eccodes-install/share/eccodes/definitions",
-		"LD_LIBRARY_PATH=/home/dmarkham/git/dmarkham/grib2/reference/eccodes-install/lib",
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		t.Logf("grib_get_data failed for %s (may be truncated test file): %v", path, err)
-		return nil, nil
-	}
-
-	var lats, lons []float64
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	first := true
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if first {
-			first = false
-			continue // skip header
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		lat, err1 := strconv.ParseFloat(fields[0], 64)
-		lon, err2 := strconv.ParseFloat(fields[1], 64)
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		lats = append(lats, lat)
-		lons = append(lons, lon)
-	}
-	return lats, lons
-}
-
-// crossValidate compares our coordinates against eccodes coordinates.
-func crossValidate(t *testing.T, lats, lons, eccLats, eccLons []float64, tolerance float64) {
-	t.Helper()
-	n := len(lats)
-	ne := len(eccLats)
-	if n != ne {
-		t.Errorf("coordinate count mismatch: got %d, eccodes has %d", n, ne)
-		if ne < n {
-			n = ne
-		}
-	}
-
-	// Our GridCoordinates outputs canonical order (north-to-south, west-to-east)
-	// but eccodes grib_get_data outputs raw scanning order. For comparison,
-	// sort both sets by (lat, lon) and compare sorted.
-	type coord struct{ lat, lon float64 }
-	ours := make([]coord, n)
-	eccs := make([]coord, n)
-	for i := 0; i < n; i++ {
-		ours[i] = coord{math.Round(lats[i]*1e4) / 1e4, math.Round(lons[i]*1e4) / 1e4}
-		eccs[i] = coord{math.Round(eccLats[i]*1e4) / 1e4, math.Round(eccLons[i]*1e4) / 1e4}
-	}
-	sortCoords := func(c []coord) {
-		for i := 1; i < len(c); i++ {
-			for j := i; j > 0 && (c[j].lat < c[j-1].lat || (c[j].lat == c[j-1].lat && c[j].lon < c[j-1].lon)); j-- {
-				c[j], c[j-1] = c[j-1], c[j]
-			}
-		}
-	}
-	sortCoords(ours)
-	sortCoords(eccs)
-
-	maxLatErr := 0.0
-	maxLonErr := 0.0
-	var badCount int
-	for i := 0; i < n; i++ {
-		latErr := math.Abs(ours[i].lat - eccs[i].lat)
-		lonErr := math.Abs(ours[i].lon - eccs[i].lon)
-		if lonErr > 180 {
-			lonErr = 360 - lonErr
-		}
-		if latErr > maxLatErr {
-			maxLatErr = latErr
-		}
-		if lonErr > maxLonErr {
-			maxLonErr = lonErr
-		}
-		if latErr > tolerance || lonErr > tolerance {
-			if badCount < 5 {
-				t.Errorf("sorted[%d]: lat=%f lon=%f, eccodes lat=%f lon=%f (latErr=%f lonErr=%f)",
-					i, ours[i].lat, ours[i].lon, eccs[i].lat, eccs[i].lon, latErr, lonErr)
-			}
-			badCount++
-		}
-	}
-	if badCount > 0 {
-		t.Errorf("total mismatched points: %d/%d (maxLatErr=%f maxLonErr=%f)", badCount, n, maxLatErr, maxLonErr)
-	} else {
-		t.Logf("all %d points match within tolerance %f (maxLatErr=%f maxLonErr=%f)", n, tolerance, maxLatErr, maxLonErr)
-	}
 }
 
 func TestGridCoordGaussianLatitudesSmall(t *testing.T) {

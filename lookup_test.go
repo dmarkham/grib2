@@ -5,7 +5,6 @@ import (
 	"math"
 	"math/rand"
 	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -652,17 +651,9 @@ func TestNearestValue_Template31_ExhaustiveBruteForce(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNearestValue_Template31_RDPSRealFile(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skipf("cannot determine home dir: %v", err)
-	}
-	rdpsPath := filepath.Join(home, ".cache", "astro-forecast", "rdps.20260408.18z", "f008",
-		"20260408T18Z_MSC_RDPS_AirTemp_AGL-2m_RLatLon0.09_PT008H.grib2")
-
-	if _, err := os.Stat(rdpsPath); os.IsNotExist(err) {
-		t.Skipf("RDPS file not found: %s", rdpsPath)
-	}
-
+	// The committed RDPS file is on the same rotated 0.09 degree grid as the
+	// MSC AirTemp_AGL-2m products this test was written against.
+	rdpsPath := "testdata/rdps_surface.grib2"
 	field := loadTemplate31Field(t, rdpsPath)
 
 	lats, lons, err := field.GridCoordinates()

@@ -323,9 +323,9 @@ All decode paths are cross-validated against eccodes reference output. Constant 
 The test suite covers:
 
 - **Byte-perfect round-trips**: read a GRIB2 file, write it back, compare bytes
-- **Cross-validation against eccodes**: when the eccodes tools are built in `reference/eccodes-install`, every field of every fixture is compared point by point with `grib_get_data`, product metadata with `grib_get`, and our encoders' output is decoded by eccodes. Fixtures derived from eccodes data and samples live in `testdata/upstream` (see `generate.sh`)
+- **Cross-validation against eccodes, with no eccodes needed**: `testdata/upstream/eccodes_reference.json` records what eccodes decodes for every field of every fixture (a fingerprint of every value, sampled points and coordinates, metadata, pv arrays, nearest-point answers), and the golden files in `testdata/upstream/encoded` are our encoders' output as eccodes decoded it (with Jasper and OpenJPEG). Every test runs from these committed files. Developers with eccodes built in `reference/eccodes-install` regenerate them with `GRIB2_WRITE_ECCODES_REFERENCE=1 go test -run TestEccodesReference_Write .`, and `TestEccodesReference_UpToDate` checks they still match eccodes. Fixtures derived from eccodes data and samples are made by `testdata/upstream/generate.sh`; libaec's CCSDS test vectors and golden JPEG2000 streams checked with OpenJPEG and Jasper are in `internal/*/testdata`
 - **Encode/decode round-trips**: pack values, unpack them, verify they match within quantization tolerance
-- **Grid coordinate validation**: every point's lat/lon, and its pairing with the value, compared against eccodes for every grid type and scanning mode
+- **Grid coordinate validation**: lat/lon and their pairing with values compared against eccodes' for every grid type and scanning mode
 - **Section-level parsing**: individual tests for all section readers and writers (Sections 0-8)
 - **Template coverage**: dedicated tests for all grid, product, and data representation templates
 - **Fuzz testing**: fuzz targets for the message stream (with a rewrite-stability check), each unpacker and their template parameters, the JPEG2000 and AEC codecs

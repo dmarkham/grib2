@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,7 +126,6 @@ var decodeExpectedErrors = map[string]string{
 // point (eccodes tests/grib_multi.sh, grib_png.sh, grib_ccsds.sh,
 // grib_jpeg.sh, grib_complex.sh compare decoded values the same way).
 func TestValues_AllFixtures(t *testing.T) {
-	ecc := eccodesAvailable(t) && !testing.Short()
 	for _, p := range allFixturePaths(t) {
 		t.Run(p, func(t *testing.T) {
 			raw, err := os.ReadFile(p)
@@ -160,55 +158,11 @@ func TestValues_AllFixtures(t *testing.T) {
 					if len(vals) != int(f.Section3.NumberOfDataPoints) {
 						t.Fatalf("message %d field %d: %d values, want %d", m, i, len(vals), f.Section3.NumberOfDataPoints)
 					}
-					if ecc && len(msg.Fields) == 1 && m < 3 {
-						compareWithEccodes(t, p, m+1, f, vals)
-					}
 				}
 			}
 			if count == 0 {
 				t.Fatal("no fields")
 			}
 		})
-	}
-}
-
-// compareWithEccodes checks decoded values against grib_get_data for
-// message msgIndex (1-based), in canonical order.
-func compareWithEccodes(t *testing.T, file string, msgIndex int, f *Field, vals []float64) {
-	t.Helper()
-	if _, _, err := f.GridCoordinates(); err != nil {
-		return // eccodes cannot iterate an inconsistent grid either
-	}
-	_, _, eVals := eccodesPoints(t, file, msgIndex)
-	if len(eVals) != len(vals) {
-		t.Fatalf("message %d: eccodes has %d values, we have %d", msgIndex, len(eVals), len(vals))
-	}
-	scan, ni, nj := gridScanParams(f.Section3.Template)
-	switch f.Section3.Template.(type) {
-	case Template310, Template320, Template330:
-		scan = 0x40 // eccodes lists these +i +j
-	}
-	if scan&0x10 != 0 {
-		return // eccodes' iterator ignores alternative rows
-	}
-	if scan != 0 && ni != missingUint32 && ni*nj == len(eVals) {
-		eVals = applyScanningMode(eVals, scan, ni, nj)
-	}
-	bad := 0
-	for i := range vals {
-		a, b := vals[i], eVals[i]
-		if math.IsNaN(a) && math.IsNaN(b) {
-			continue
-		}
-		// grib_get_data prints 12 significant digits.
-		if math.IsNaN(a) != math.IsNaN(b) || math.Abs(a-b) > 1e-9*math.Max(1, math.Abs(b)) {
-			if bad < 3 {
-				t.Errorf("message %d point %d: ours %v, eccodes %v", msgIndex, i, a, b)
-			}
-			bad++
-		}
-	}
-	if bad > 0 {
-		t.Errorf("message %d: %d of %d values differ from eccodes", msgIndex, bad, len(vals))
 	}
 }

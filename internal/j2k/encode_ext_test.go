@@ -199,28 +199,95 @@ func TestEncodeExternalDecoders(t *testing.T) {
 	}
 }
 
-func testExternalDecoder(t *testing.T, tool string) {
-	cases := []struct {
-		w, h, prec int
-		kind       string
-	}{
-		{1, 1, 8, "smooth"}, {2, 1, 8, "smooth"}, {7, 1, 8, "smooth"}, {3, 2, 12, "smooth"},
-		{496, 1, 12, "smooth"}, {6114, 1, 16, "random"}, {37, 29, 1, "random"},
-		{37, 29, 16, "random"}, {37, 29, 24, "random"}, {37, 29, 28, "random"},
-		{37, 29, 30, "smooth"}, {37, 29, 31, "smooth"},
+type externalCase struct {
+	w, h, prec int
+	kind       string
+}
+
+func (c externalCase) name() string { return fmt.Sprintf("%dx%d_p%d_%s", c.w, c.h, c.prec, c.kind) }
+
+func (c externalCase) samples() []int32 {
+	if c.kind == "smooth" {
+		return smoothSamples(c.w, c.h, c.prec)
 	}
-	for _, tc := range cases {
+	return fullRangeSamples(c.w*c.h, c.prec)
+}
+
+var externalCases = []externalCase{
+	{1, 1, 8, "smooth"}, {2, 1, 8, "smooth"}, {7, 1, 8, "smooth"}, {3, 2, 12, "smooth"},
+	{496, 1, 12, "smooth"}, {6114, 1, 16, "random"}, {37, 29, 1, "random"},
+	{37, 29, 16, "random"}, {37, 29, 24, "random"}, {37, 29, 28, "random"},
+	{37, 29, 30, "smooth"}, {37, 29, 31, "smooth"},
+}
+
+// goldenStreamDir holds Encode's output for externalCases. When written
+// (GRIB2_WRITE_J2K_GOLDEN=1), each stream is decoded by opj_decompress (and
+// by the jasper CLI up to 16 bits) and must give back the samples exactly.
+var goldenStreamDir = filepath.Join("testdata", "encoded")
+
+// TestEncode_GoldenStreams: Encode still writes the streams OpenJPEG and
+// Jasper were checked against, and our decoder reads them back exactly. It
+// needs no external tools; TestEncodeExternalDecoders re-checks with them.
+func TestEncode_GoldenStreams(t *testing.T) {
+	write := os.Getenv("GRIB2_WRITE_J2K_GOLDEN") != ""
+	if write {
+		if err := os.MkdirAll(goldenStreamDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range externalCases {
+		t.Run(tc.name(), func(t *testing.T) {
+			samples := tc.samples()
+			cs, err := Encode(samples, tc.w, tc.h, tc.prec)
+			path := filepath.Join(goldenStreamDir, tc.name()+".j2k")
+			if err != nil {
+				if _, statErr := os.Stat(path); statErr == nil {
+					t.Fatalf("Encode now refuses a case it used to encode: %v", err)
+				}
+				return // refused at write time too (prec > 28 with nasty data)
+			}
+			if write {
+				for _, tool := range []string{"opj_decompress", "jasper"} {
+					if tool == "jasper" && tc.prec > 16 {
+						continue // the jasper CLI writes PGX up to 16 bits only
+					}
+					got, w, h, err := externalDecode(t, tool, cs)
+					if err != nil || w != tc.w || h != tc.h {
+						t.Fatalf("%s: %v (%dx%d)", tool, err, w, h)
+					}
+					compareSamples(t, got, samples)
+				}
+				if err := os.WriteFile(path, cs, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(cs, want) {
+				t.Fatalf("Encode output changed (%d bytes, golden %d); regenerate with GRIB2_WRITE_J2K_GOLDEN=1", len(cs), len(want))
+			}
+			got, w, h, err := Decode(want)
+			if err != nil || w != tc.w || h != tc.h {
+				t.Fatalf("Decode: %v (%dx%d)", err, w, h)
+			}
+			compareSamples(t, got, samples)
+		})
+	}
+}
+
+func testExternalDecoder(t *testing.T, tool string) {
+	for _, tc := range externalCases {
 		tc := tc
-		t.Run(fmt.Sprintf("%dx%d_p%d_%s", tc.w, tc.h, tc.prec, tc.kind), func(t *testing.T) {
-			if tool == "jasper" && tc.prec > 16 {
-				// The jasper CLI cannot write PGX above 16 bits; the root
-				// package's eccodes test decodes 24-bit output with Jasper.
-				t.Skip("jasper CLI: PGX output limited to 16 bits")
-			}
-			samples := fullRangeSamples(tc.w*tc.h, tc.prec)
-			if tc.kind == "smooth" {
-				samples = smoothSamples(tc.w, tc.h, tc.prec)
-			}
+		if tool == "jasper" && tc.prec > 16 {
+			// The jasper CLI cannot write PGX above 16 bits; eccodes decodes
+			// our deeper output with Jasper (golden files in the root package).
+			continue
+		}
+		t.Run(tc.name(), func(t *testing.T) {
+			samples := tc.samples()
 			cs, err := Encode(samples, tc.w, tc.h, tc.prec)
 			if err != nil {
 				if tc.prec <= 28 {

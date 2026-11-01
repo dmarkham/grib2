@@ -314,10 +314,6 @@ func TestUnpackJPEG2000_LossyOpenJPEG(t *testing.T) {
 			t.Fatalf("value[%d] = %v below the reference value %v", i, v, tmpl.ReferenceValue)
 		}
 	}
-	if eccodesAvailable(t) {
-		want := jpegGribGetData(t, "testdata/jpeg_lossy_openjpeg.grib2", "openjpeg")
-		jpegCompare(t, values, want[0], 1e-12)
-	}
 }
 
 // TestUnpackJPEG2000_LossyJasperRejected: Jasper's lossy mode writes an
@@ -371,38 +367,7 @@ func TestUnpackJPEG2000_LegacyTemplate40000(t *testing.T) {
 	if len(all) != 26 {
 		t.Fatalf("decoded %d messages, want 26", len(all))
 	}
-	if !eccodesAvailable(t) || testing.Short() {
-		return
-	}
-	want := jpegGribGetData(t, "testdata/v.grib2", "openjpeg")
-	if len(want) != 26 {
-		t.Fatalf("grib_get_data returned %d messages", len(want))
-	}
-	for i := range all {
-		jpegCompare(t, all[i], want[i], 1e-9)
-	}
-}
-
-// TestUnpackJPEG2000_RDPSPositional compares the RDPS JPEG fields with
-// eccodes position by position (the cross-check in eccodes_crossval_test.go
-// compares sorted values, which a pixel permutation would pass; M26).
-func TestUnpackJPEG2000_RDPSPositional(t *testing.T) {
-	if !eccodesAvailable(t) || testing.Short() {
-		t.Skip("needs eccodes; skipped in -short")
-	}
-	for _, name := range []string{"rdps_surface", "rdps_isobaric_850"} {
-		t.Run(name, func(t *testing.T) {
-			path := filepath.Join("testdata", name+".grib2")
-			f := jpegReadField(t, path)
-			// Stored (scan) order, as grib_get_data prints it.
-			got, err := UnpackJPEG2000(f.Section7.Data, jpegTemplate540(t, f), f.Section5.NumberOfValues)
-			if err != nil {
-				t.Fatalf("UnpackJPEG2000: %v", err)
-			}
-			want := jpegGribGetData(t, path, "openjpeg")
-			jpegCompare(t, got, want[0], 1e-12)
-		})
-	}
+	// eccodes' decode of every message is in eccodesReferenceFile.
 }
 
 // ---------------------------------------------------------------------------
@@ -701,73 +666,3 @@ func jpegBuildMessage(t *testing.T, values []float64, bpv uint8) ([]byte, Templa
 	return buf.Bytes(), tmpl, packed
 }
 
-// TestPackJPEG2000_EccodesDecodes covers audit H18: PackJPEG2000 output is
-// decoded by eccodes with both Jasper (the decoder of wgrib2, g2clib and
-// the default eccodes build, which rejected Psot=0) and OpenJPEG.
-func TestPackJPEG2000_EccodesDecodes(t *testing.T) {
-	if !eccodesAvailable(t) {
-		t.Skip("eccodes not available")
-	}
-	base := jpegReadField(t, "testdata/regular_latlon_surface.grib2")
-	orig, err := base.Values()
-	if err != nil {
-		t.Fatal(err)
-	}
-	shifted := make([]float64, len(orig)) // minimum not representable in float32
-	for i, v := range orig {
-		shifted[i] = v + 0.1
-	}
-	constant := make([]float64, len(orig))
-	for i := range constant {
-		constant[i] = 273.15
-	}
-	type tc struct {
-		name string
-		vals []float64
-		bpv  uint8
-		libs []string
-	}
-	both := []string{"jasper", "openjpeg"}
-	cases := []tc{
-		{"orig_b8", orig, 8, both},
-		{"orig_b14", orig, 14, both},
-		{"shifted_b16", shifted, 16, both},
-		{"shifted_b24", shifted, 24, both},
-		{"shifted_b28", shifted, 28, both},
-		{"shifted_b29", shifted, 29, both},
-		{"shifted_b30", shifted, 30, both},
-		{"constant", constant, 12, both},
-	}
-	for _, c := range cases {
-		c := c
-		t.Run(c.name, func(t *testing.T) {
-			data, tmpl, packed := jpegBuildMessage(t, c.vals, c.bpv)
-			path := filepath.Join(t.TempDir(), c.name+".grib2")
-			if err := os.WriteFile(path, data, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			ours, err := UnpackJPEG2000(packed, tmpl, uint32(len(c.vals)))
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, lib := range c.libs {
-				got := jpegGribGetData(t, path, lib)
-				if len(got) != 1 || len(got[0]) != len(c.vals) {
-					t.Fatalf("%s: grib_get_data returned %d messages", lib, len(got))
-				}
-				jpegCompare(t, got[0], ours, 1e-12)
-				jpegCheckHalfStep(t, c.vals, got[0], tmpl)
-			}
-			cmd := exec.Command(jpegEccodesBin("grib_get"), "-p", "numberOfValues,section7Length,bitsPerValue", path)
-			cmd.Env = eccodesEnv()
-			out, err := cmd.Output()
-			if err != nil {
-				t.Fatalf("grib_get: %v", err)
-			}
-			want := fmt.Sprintf("%d %d %d", len(c.vals), 5+len(packed), tmpl.BitsPerValue)
-			if got := strings.TrimSpace(string(out)); got != want {
-				t.Errorf("grib_get = %q, want %q", got, want)
-			}
-		})
-	}
-}
