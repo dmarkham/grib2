@@ -338,9 +338,6 @@ func TestUnpackJPEG2000_LossyJasperRejected(t *testing.T) {
 // (audit H16), and compares them with eccodes when it is available.
 func TestUnpackJPEG2000_LegacyTemplate40000(t *testing.T) {
 	raw, err := os.ReadFile("testdata/v.grib2")
-	// v.grib2 is gitignored; testdata/upstream/multi_first3.grib2 (also
-	// 5.40000) keeps this covered through TestEccodesReference_Check.
-	skipIfGitignoredFixture(t, "testdata/v.grib2", err)
 	if err != nil {
 		t.Fatal(err)
 	}

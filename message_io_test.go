@@ -15,7 +15,6 @@ import (
 func readFixture(t *testing.T, path string) []byte {
 	t.Helper()
 	raw, err := os.ReadFile(path)
-	skipIfGitignoredFixture(t, path, err)
 	if err != nil {
 		t.Fatal(err)
 	}

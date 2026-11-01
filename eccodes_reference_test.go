@@ -267,7 +267,7 @@ func TestEccodesReference_Check(t *testing.T) {
 	checked := 0
 	for p, fields := range ref {
 		if _, err := os.Stat(p); err != nil {
-			t.Logf("skipping %s: %v", p, err) // gitignored large fixture absent
+			t.Errorf("fixture %s is in the reference but missing: %v", p, err)
 			continue
 		}
 		ff := fixtureFieldsInOrder(p)
@@ -322,7 +322,7 @@ func TestEccodesReference_Check(t *testing.T) {
 			checked++
 		}
 	}
-	if checked < 150 {
+	if checked < 280 {
 		t.Errorf("only %d reference fields", checked)
 	}
 }

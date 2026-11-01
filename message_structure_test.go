@@ -19,7 +19,6 @@ import (
 func decodeAll(t *testing.T, path string) []*Message {
 	t.Helper()
 	raw, err := os.ReadFile(path)
-	skipIfGitignoredFixture(t, path, err)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,21 +33,6 @@ func decodeAll(t *testing.T, path string) []*Message {
 			t.Fatalf("%s: message %d: %v", path, len(msgs), err)
 		}
 		msgs = append(msgs, msg)
-	}
-}
-
-// gitignoredFixtures are large downloaded files .gitignore keeps out of
-// the repository; tests that need them skip when they are absent.
-var gitignoredFixtures = map[string]bool{
-	"testdata/v.grib2":                true,
-	"testdata/high_level_api.grib2":   true,
-	"testdata/gfs.complex.mvmu.grib2": true,
-}
-
-func skipIfGitignoredFixture(t *testing.T, path string, err error) {
-	t.Helper()
-	if os.IsNotExist(err) && gitignoredFixtures[path] {
-		t.Skipf("%s is not in the repository (see .gitignore)", path)
 	}
 }
 

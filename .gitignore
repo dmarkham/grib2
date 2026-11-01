@@ -1,12 +1,8 @@
 # Reference builds (large, not part of the Go library)
 /reference/
 
-# Test data (large downloaded GRIB2 files)
-testdata/v.grib2
-testdata/high_level_api.grib2
-testdata/gfs.complex.mvmu.grib2
-# Keep small test fixtures and their reference data committed
-# Large eccodes reference value files (generated at test time)
+# eccodes reference values are committed gzipped (*.values.gz); tests read
+# either form, so keep uncompressed copies out of git
 testdata/reference/*.values
 
 # Go
