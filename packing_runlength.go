@@ -30,6 +30,13 @@ func UnpackRunLength(data []byte, tmpl Template5200, numValues uint32, missingVa
 	numLevels := int64(tmpl.NumberOfLevelValues)
 	dsf := int(tmpl.DecimalScaleFactor)
 
+	if bpv == 0 || bpv > 63 {
+		return nil, fmt.Errorf("grib2: run-length packing: invalid bits per value %d", bpv)
+	}
+	if int64(len(tmpl.LevelValues)) < numLevels {
+		return nil, fmt.Errorf("grib2: run-length packing: %d level values, template declares %d", len(tmpl.LevelValues), numLevels)
+	}
+
 	// Number of compressed values in the data stream
 	numCompressed := int64(len(data)*8) / int64(bpv)
 	if numCompressed == 0 || maxLevel == 0 {

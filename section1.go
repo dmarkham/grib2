@@ -42,6 +42,7 @@ type Section1 struct {
 	Second                     uint8
 	ProductionStatus           uint8 // Table 1.3
 	TypeOfData                 uint8 // Table 1.4
+	Reserved                   []byte // octets 22-N (e.g. the calendar template of Table 1.5), kept verbatim
 }
 
 const section1MinLength = 21
@@ -50,6 +51,19 @@ const section1MinLength = 21
 func (s *Section1) ReferenceTime() time.Time {
 	return time.Date(int(s.Year), time.Month(s.Month), int(s.Day),
 		int(s.Hour), int(s.Minute), int(s.Second), 0, time.UTC)
+}
+
+// ValidateReferenceTime reports an error if the reference time components
+// do not form a real date and time (ReferenceTime would silently normalise
+// them, e.g. 2025-02-29 to 2025-03-01).
+func (s *Section1) ValidateReferenceTime() error {
+	t := s.ReferenceTime()
+	if s.Month < 1 || s.Month > 12 || s.Hour > 23 || s.Minute > 59 || s.Second > 59 ||
+		t.Year() != int(s.Year) || t.Month() != time.Month(s.Month) || t.Day() != int(s.Day) {
+		return fmt.Errorf("grib2: invalid reference time %04d-%02d-%02d %02d:%02d:%02d",
+			s.Year, s.Month, s.Day, s.Hour, s.Minute, s.Second)
+	}
+	return nil
 }
 
 // ReadSection1 reads the Identification Section from r.
@@ -83,13 +97,19 @@ func ReadSection1(r io.Reader) (Section1, error) {
 		ProductionStatus:           body[14],             // octet 20
 		TypeOfData:                 body[15],             // octet 21
 	}
+	if len(body) > section1MinLength-5 {
+		s.Reserved = append([]byte(nil), body[section1MinLength-5:]...) // octets 22-N
+	}
 
 	return s, nil
 }
 
 // WriteSection1 writes the Identification Section to w.
 func WriteSection1(w io.Writer, s Section1) error {
-	length := uint32(section1MinLength)
+	length, err := sectionLength(1, section1MinLength + len(s.Reserved))
+	if err != nil {
+		return err
+	}
 	buf := make([]byte, length)
 
 	binary.BigEndian.PutUint32(buf[0:4], length)
@@ -107,8 +127,9 @@ func WriteSection1(w io.Writer, s Section1) error {
 	buf[18] = s.Second
 	buf[19] = s.ProductionStatus
 	buf[20] = s.TypeOfData
+	copy(buf[21:], s.Reserved)
 
-	_, err := w.Write(buf)
+	_, err = w.Write(buf)
 	if err != nil {
 		return fmt.Errorf("grib2: writing section 1: %w", err)
 	}

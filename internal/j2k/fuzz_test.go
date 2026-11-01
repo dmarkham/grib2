@@ -2,6 +2,7 @@ package j2k
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -14,6 +15,14 @@ func FuzzJ2KDecode(f *testing.F) {
 	seed, err := os.ReadFile("../../testdata/reference/sample.j2k")
 	if err == nil {
 		f.Add(seed)
+	}
+	// The opj_compress fixtures cover tiles, tile-parts, layers, POC,
+	// precincts, SOP/EPH and every code-block style.
+	paths, _ := filepath.Glob("testdata/*.j2k")
+	for _, p := range paths {
+		if d, err := os.ReadFile(p); err == nil {
+			f.Add(d)
+		}
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {

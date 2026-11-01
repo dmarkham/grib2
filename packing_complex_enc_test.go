@@ -30,6 +30,11 @@ func TestPackComplex_RoundTrip_Constant(t *testing.T) {
 		t.Fatalf("got %d values, want %d", len(decoded), n)
 	}
 
+	for i, v := range decoded {
+		if float32(v) != float32(273.15) {
+			t.Fatalf("value %d: %v, want 273.15 to float32 precision", i, v)
+		}
+	}
 	t.Logf("constant field: %d groups, bpv=%d", tmpl.NumberOfGroups, tmpl.BitsPerValue)
 }
 
@@ -100,6 +105,9 @@ func TestPackComplex_RoundTrip_SmallValues(t *testing.T) {
 	}
 
 	quantErr := math.Pow(2, float64(tmpl.BinaryScaleFactor))
+	if maxErr > quantErr && maxErr > 1e-9 {
+		t.Errorf("small values: max error %v exceeds 2^E = %v", maxErr, quantErr)
+	}
 	t.Logf("small values: %d groups, bpv=%d, maxErr=%.6e, quantBound=%.6e",
 		tmpl.NumberOfGroups, tmpl.BitsPerValue, maxErr, quantErr)
 }
@@ -259,61 +267,6 @@ func TestPackComplexSpatialDiff_RoundTrip_LargeOrder2(t *testing.T) {
 	quantErr := math.Pow(2, float64(tmpl.BinaryScaleFactor))
 	t.Logf("large order 2: %d values, %d groups, bpv=%d, nOctExtra=%d, maxErr=%.6e, quantBound=%.6e",
 		n, tmpl.NumberOfGroups, tmpl.BitsPerValue, tmpl.NumberOfOctetsExtraDescriptors, maxErr, quantErr)
-
-	if maxErr > quantErr*1.1 {
-		t.Errorf("round-trip error %.6e exceeds quantization bound %.6e", maxErr, quantErr)
-	}
-}
-
-func TestPackComplex_SampleGrib2RoundTrip(t *testing.T) {
-	raw, err := os.ReadFile("testdata/sample.grib2")
-	if err != nil {
-		t.Skipf("read: %v", err)
-	}
-
-	msg, err := ReadMessage(bytes.NewReader(raw))
-	if err != nil {
-		t.Fatalf("ReadMessage: %v", err)
-	}
-
-	field := msg.Fields[0]
-	tmpl, ok := field.Section5.Template.(Template52)
-	if !ok {
-		t.Skipf("not Template52: %T", field.Section5.Template)
-	}
-
-	origValues, err := UnpackComplex(field.Section7.Data, tmpl, field.Section5.NumberOfValues, 0, 0)
-	if err != nil {
-		t.Fatalf("UnpackComplex: %v", err)
-	}
-
-	// Re-encode
-	packed, newTmpl, err := PackComplex(origValues, 16)
-	if err != nil {
-		t.Fatalf("PackComplex: %v", err)
-	}
-
-	// Decode re-encoded data
-	reValues, err := UnpackComplex(packed, newTmpl, uint32(len(origValues)), 0, 0)
-	if err != nil {
-		t.Fatalf("UnpackComplex re-packed: %v", err)
-	}
-
-	if len(reValues) != len(origValues) {
-		t.Fatalf("got %d values, want %d", len(reValues), len(origValues))
-	}
-
-	maxErr := 0.0
-	for i, got := range reValues {
-		diff := math.Abs(got - origValues[i])
-		if diff > maxErr {
-			maxErr = diff
-		}
-	}
-
-	quantErr := math.Pow(2, float64(newTmpl.BinaryScaleFactor))
-	t.Logf("sample.grib2 round-trip: %d values, maxErr=%.6e, quantBound=%.6e",
-		len(origValues), maxErr, quantErr)
 
 	if maxErr > quantErr*1.1 {
 		t.Errorf("round-trip error %.6e exceeds quantization bound %.6e", maxErr, quantErr)

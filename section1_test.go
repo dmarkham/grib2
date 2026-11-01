@@ -1,6 +1,7 @@
 package grib2
 
 import (
+	"reflect"
 	"bytes"
 	"os"
 	"testing"
@@ -92,7 +93,7 @@ func TestWriteSection1_RoundTrip(t *testing.T) {
 		t.Fatalf("ReadSection1: %v", err)
 	}
 
-	if decoded != original {
+	if !reflect.DeepEqual(decoded, original) {
 		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", decoded, original)
 	}
 }

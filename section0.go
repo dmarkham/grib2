@@ -44,6 +44,9 @@ func ReadSection0(r io.Reader) (Section0, error) {
 		if errors.Is(err, io.ErrUnexpectedEOF) {
 			return Section0{}, ErrTruncated
 		}
+		if err == io.EOF {
+			return Section0{}, io.EOF // nothing left: a clean end of stream
+		}
 		return Section0{}, fmt.Errorf("grib2: reading section 0: %w", err)
 	}
 

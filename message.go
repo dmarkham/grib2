@@ -3,6 +3,7 @@ package grib2
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -18,7 +19,15 @@ type Message struct {
 
 // Field is one data field within a GRIB2 message.
 // Each field consists of sections 3 through 7.
+//
+// After the first field, a message may repeat from Section 2, 3 or 4. A
+// field that starts at Section 4 reuses the previous field's grid: its
+// Section3 is a copy of that grid and SharesSection3 is true, so WriteMessage
+// does not write it again. A field preceded by its own Section 2 carries it in
+// Section2 (the first field's Section 2 is Message.Section2).
 type Field struct {
+	Section2       *Section2 // repeated local use section before this field (fields after the first only)
+	SharesSection3 bool      // field started at Section 4 and reuses the previous Section 3
 	Section3 Section3
 	Section4 Section4
 	Section5 Section5
@@ -28,6 +37,11 @@ type Field struct {
 
 // Decoder reads GRIB2 messages from a stream.
 // Use NewDecoder to create one, then call Decode repeatedly.
+//
+// Like eccodes' readers, the Decoder skips anything between messages that
+// does not start with "GRIB" (padding, headers, junk). A GRIB edition 1
+// message is skipped whole and reported with an error wrapping
+// ErrNotEdition2, after which Decode can be called again.
 type Decoder struct {
 	br *bufio.Reader
 }
@@ -41,15 +55,87 @@ func NewDecoder(r io.Reader) *Decoder {
 	return &Decoder{br: br}
 }
 
+// countingReader counts the bytes read through it.
+type countingReader struct {
+	r io.Reader
+	n uint64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += uint64(n)
+	return n, err
+}
+
+// syncToMagic discards bytes up to the next "GRIB". It returns io.EOF if the
+// stream ends first.
+func (d *Decoder) syncToMagic() error {
+	for {
+		b, err := d.br.Peek(4)
+		if string(b) == gribMagic {
+			return nil
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return io.EOF // trailing bytes that are not a message
+			}
+			return err
+		}
+		if _, err := d.br.Discard(1); err != nil {
+			return err
+		}
+	}
+}
+
+// skipEdition1 discards a GRIB edition 1 message (3-octet length at octets 5-7).
+func (d *Decoder) skipEdition1() error {
+	hdr, err := d.br.Peek(8)
+	if err != nil {
+		return ErrTruncated
+	}
+	n := int(hdr[4])<<16 | int(hdr[5])<<8 | int(hdr[6])
+	if n < 8 {
+		n = 8
+	}
+	if _, err := d.br.Discard(n); err != nil {
+		return ErrTruncated
+	}
+	return fmt.Errorf("%w: skipped a GRIB edition %d message of %d bytes", ErrNotEdition2, hdr[7], n)
+}
+
 // Decode reads the next GRIB2 message.
-// Returns io.EOF when no more messages are available.
+// Returns io.EOF (unwrapped) when no more messages are available. A
+// message cut short by the end of the stream gives an error wrapping
+// ErrTruncated, never io.EOF, so a "read until io.EOF" loop cannot mistake
+// a partial message for the end of the file.
 func (d *Decoder) Decode() (*Message, error) {
-	s0, err := ReadSection0(d.br)
+	if err := d.syncToMagic(); err != nil {
+		return nil, err
+	}
+	if hdr, err := d.br.Peek(8); err == nil && hdr[7] != grib2Edition {
+		return nil, d.skipEdition1()
+	}
+	cr := &countingReader{r: d.br}
+	msg, err := d.decode(cr)
+	if err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, fmt.Errorf("%w: %v", ErrTruncated, err)
+		}
+		return nil, err
+	}
+	if cr.n != msg.Section0.TotalLength {
+		return nil, fmt.Errorf("grib2: message is %d bytes but section 0 declares %d", cr.n, msg.Section0.TotalLength)
+	}
+	return msg, nil
+}
+
+func (d *Decoder) decode(r io.Reader) (*Message, error) {
+	s0, err := ReadSection0(r)
 	if err != nil {
 		return nil, err
 	}
 
-	s1, err := ReadSection1(d.br)
+	s1, err := ReadSection1(r)
 	if err != nil {
 		return nil, err
 	}
@@ -65,41 +151,85 @@ func (d *Decoder) Decode() (*Message, error) {
 	}
 
 	if secNum == 2 {
-		s2, err := ReadSection2(d.br)
+		s2, err := ReadSection2(r)
 		if err != nil {
 			return nil, err
 		}
 		msg.Section2 = &s2
 	}
 
-	// Read repeated field groups (sections 3-7)
-	var lastSection3 Section3
+	// Read repeated field groups (sections 3-7). After the first field the
+	// message may repeat from Section 2, 3 or 4 (WMO GRIB2 regulation 92.1.3).
+	var lastSection3 *Section3
+	var lastBitmap []byte
 	for {
 		secNum, err = peekSectionNumber(d.br)
 		if err != nil {
 			return nil, fmt.Errorf("grib2: peeking for next field group: %w", err)
 		}
-
-		if secNum != 3 && secNum != 4 {
+		if secNum == 8 {
 			break
 		}
 
-		field, err := readField(d.br, secNum)
+		var s2 *Section2
+		if secNum == 2 && len(msg.Fields) > 0 {
+			sec, err := ReadSection2(r)
+			if err != nil {
+				return nil, err
+			}
+			s2 = &sec
+			if secNum, err = peekSectionNumber(d.br); err != nil {
+				return nil, fmt.Errorf("grib2: peeking after repeated section 2: %w", err)
+			}
+			if secNum != 3 {
+				return nil, fmt.Errorf("grib2: repeated section 2 must be followed by section 3, got section %d", secNum)
+			}
+		}
+
+		switch secNum {
+		case 3:
+		case 4:
+			if lastSection3 == nil {
+				return nil, fmt.Errorf("grib2: section 4 before any section 3")
+			}
+		default:
+			if secNum > 8 {
+				// Not a section at all: most likely a damaged "7777".
+				return nil, fmt.Errorf("%w: found section number %d", ErrInvalidEndSection, secNum)
+			}
+			return nil, fmt.Errorf("grib2: unexpected section %d in field group", secNum)
+		}
+
+		field, err := readField(r, secNum)
 		if err != nil {
 			return nil, err
 		}
+		field.Section2 = s2
 
 		if secNum == 3 {
-			lastSection3 = field.Section3
+			s3 := field.Section3
+			lastSection3 = &s3
 		} else {
-			// Section 4 start: inherit the previous field's Section 3
-			field.Section3 = lastSection3
+			field.Section3 = *lastSection3
+			field.SharesSection3 = true
+		}
+
+		// Bit-map indicator 254 reuses the last bitmap defined in this message.
+		switch field.Section6.Indicator {
+		case 0:
+			lastBitmap = field.Section6.Bitmap
+		case 254:
+			field.Section6.PreviousBitmap = lastBitmap
 		}
 
 		msg.Fields = append(msg.Fields, field)
 	}
 
-	if err := ReadSection8(d.br); err != nil {
+	if len(msg.Fields) == 0 {
+		return nil, fmt.Errorf("grib2: message has no data fields")
+	}
+
+	if err := ReadSection8(r); err != nil {
 		return nil, err
 	}
 
@@ -160,6 +290,10 @@ func peekSectionNumber(br *bufio.Reader) (uint8, error) {
 
 	peek, err = br.Peek(5)
 	if err != nil {
+		if len(peek) == 4 {
+			// Four bytes left that are not "7777": a corrupt end section.
+			return 0, fmt.Errorf("%w: got %q", ErrInvalidEndSection, string(peek[:4]))
+		}
 		return 0, fmt.Errorf("grib2: peeking section number: %w", err)
 	}
 
@@ -181,9 +315,16 @@ func WriteMessage(w io.Writer, msg *Message) error {
 			return err
 		}
 	}
-	for _, f := range msg.Fields {
-		if err := WriteSection3(&buf, f.Section3); err != nil {
-			return err
+	for i, f := range msg.Fields {
+		if i > 0 && f.Section2 != nil {
+			if err := WriteSection2(&buf, *f.Section2); err != nil {
+				return err
+			}
+		}
+		if i == 0 || !f.SharesSection3 {
+			if err := WriteSection3(&buf, f.Section3); err != nil {
+				return err
+			}
 		}
 		if err := WriteSection4(&buf, f.Section4); err != nil {
 			return err

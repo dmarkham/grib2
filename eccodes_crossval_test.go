@@ -17,6 +17,9 @@ import (
 // reference directory and the ECCODES_DEFINITION_PATH is usable.
 func eccodesAvailable(t *testing.T) bool {
 	t.Helper()
+	if os.Getenv("GRIB2_NO_ECCODES") != "" {
+		return false // run as if eccodes were not installed
+	}
 	gribGet := filepath.Join("reference", "eccodes-install", "bin", "grib_get")
 	if _, err := os.Stat(gribGet); err != nil {
 		return false

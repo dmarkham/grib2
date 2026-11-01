@@ -39,13 +39,16 @@ func ReadSection2(r io.Reader) (Section2, error) {
 
 // WriteSection2 writes the Local Use Section.
 func WriteSection2(w io.Writer, s Section2) error {
-	length := uint32(5 + len(s.Data))
+	length, err := sectionLength(2, 5 + len(s.Data))
+	if err != nil {
+		return err
+	}
 	buf := make([]byte, length)
 	binary.BigEndian.PutUint32(buf[0:4], length)
 	buf[4] = 2
 	copy(buf[5:], s.Data)
 
-	_, err := w.Write(buf)
+	_, err = w.Write(buf)
 	if err != nil {
 		return fmt.Errorf("grib2: writing section 2: %w", err)
 	}

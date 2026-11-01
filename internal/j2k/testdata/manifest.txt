@@ -1,0 +1,70 @@
+# JPEG 2000 codestream fixtures made with opj_compress (OpenJPEG 2.5.4).
+# Sources: genimg.py (synthetic images); codestreams: gen.sh (opj_compress/opj_decompress).
+# name width height prec signed truth expect
+base 45 37 12 u img12u.raw exact # -n 4
+base8 45 37 8 u img8u.raw exact # -n 4
+base16 45 37 16 u img16u.raw exact # -n 4
+signed16 45 37 16 s img16s.raw exact # -n 4
+prec2 45 37 2 u img1u.raw exact # -n 3
+n1 45 37 12 u img12u.raw exact # -n 1
+n2 45 37 12 u img12u.raw exact # -n 2
+n6 45 37 12 u img12u.raw exact # -n 6
+prog_RLCP 45 37 12 u img12u.raw exact # -n 4 -p RLCP
+prog_RPCL 45 37 12 u img12u.raw exact # -n 4 -p RPCL
+prog_PCRL 45 37 12 u img12u.raw exact # -n 4 -p PCRL
+prog_CPRL 45 37 12 u img12u.raw exact # -n 4 -p CPRL
+sop 45 37 12 u img12u.raw exact # -n 4 -SOP
+eph 45 37 12 u img12u.raw exact # -n 4 -EPH
+sopeph 45 37 12 u img12u.raw exact # -n 4 -SOP -EPH
+M1 45 37 12 u img12u.raw exact # -n 4 -M 1
+M2 45 37 12 u img12u.raw exact # -n 4 -M 2
+M4 45 37 12 u img12u.raw exact # -n 4 -M 4
+M8 45 37 12 u img12u.raw exact # -n 4 -M 8
+M16 45 37 12 u img12u.raw exact # -n 4 -M 16
+M32 45 37 12 u img12u.raw exact # -n 4 -M 32
+M5 45 37 12 u img12u.raw exact # -n 4 -M 5
+M17 45 37 12 u img12u.raw exact # -n 4 -M 17
+M20 45 37 12 u img12u.raw exact # -n 4 -M 20
+M38 45 37 12 u img12u.raw exact # -n 4 -M 38
+M63 45 37 12 u img12u.raw exact # -n 4 -M 63
+cb4 45 37 12 u img12u.raw exact # -n 4 -b 4,4
+cb16 45 37 12 u img12u.raw exact # -n 4 -b 16,16
+cb8x32 45 37 12 u img12u.raw exact # -n 4 -b 8,32
+cb1024x4 45 37 12 u img12u.raw exact # -n 4 -b 1024,4
+prc_LRCP 45 37 12 u img12u.raw exact # -n 4 -c [16,16],[8,8] -b 4,4
+prc_RLCP 45 37 12 u img12u.raw exact # -n 4 -c [16,16],[8,8] -b 4,4 -p RLCP
+prc_RPCL 45 37 12 u img12u.raw exact # -n 4 -c [16,16],[8,8] -b 4,4 -p RPCL
+prc_PCRL 45 37 12 u img12u.raw exact # -n 4 -c [16,16],[8,8] -b 4,4 -p PCRL
+prc_CPRL 45 37 12 u img12u.raw exact # -n 4 -c [16,16],[8,8] -b 4,4 -p CPRL
+prc_layers 45 37 12 u img12u.raw exact # -n 4 -c [16,16],[8,8] -b 4,4 -p PCRL -r 8,3,1
+layers_r 45 37 12 u img12u.raw exact # -n 4 -r 10,4,1
+layers_q 45 37 12 u img12u.raw exact # -n 4 -q 30,40,0
+layers_M1 45 37 12 u img12u.raw exact # -n 4 -r 10,4,1 -M 1
+layers_M4 45 37 12 u img12u.raw exact # -n 4 -r 10,4,1 -M 4
+layers_M63 45 37 12 u img12u.raw exact # -n 4 -r 10,4,1 -M 63
+tiles 45 37 12 u img12u.raw exact # -n 3 -t 16,16
+tiles_odd 45 37 12 u img12u.raw exact # -n 3 -t 17,13
+tiles_n4 45 37 12 u img12u.raw exact # -n 4 -t 32,32
+offset 45 37 12 u img12u.raw exact # -n 4 -d 3,5
+offset_t 45 37 12 u img12u.raw exact # -n 3 -d 3,5 -t 16,16 -T 1,2
+offset_odd 45 37 12 u img12u.raw exact # -n 4 -d 7,1
+tpR 45 37 12 u img12u.raw exact # -n 4 -TP R
+tpL 45 37 12 u img12u.raw exact # -n 4 -r 10,4,1 -TP L
+tiles_tpR 45 37 12 u img12u.raw exact # -n 3 -t 16,16 -TP R
+tlm 45 37 12 u img12u.raw exact # -n 3 -t 16,16 -TLM
+plt 45 37 12 u img12u.raw exact # -n 4 -PLT
+poc1 45 37 12 u poc1.out.raw exact # -n 4 -r 10,4,1 -POC T1=0,0,2,4,1,RLCP/T1=0,0,3,4,1,LRCP
+poc2 45 37 12 u poc2.out.raw exact # -n 4 -r 10,4,1 -POC T1=0,0,1,2,1,LRCP/T1=0,0,3,4,1,RLCP
+poc_prc 45 37 12 u poc_prc.out.raw exact # -n 4 -r 10,4,1 -c [16,16],[8,8] -b 4,4 -POC T1=0,0,1,4,1,PCRL/T1=0,0,3,4,1,RPCL
+roi 45 37 12 u img12u.raw exact # -n 4 -ROI c=0,U=4
+gb1 45 37 12 u img12u.raw exact # -n 4 -GuardBits 1
+gb4 45 37 12 u img12u.raw exact # -n 4 -GuardBits 4
+lossy 45 37 12 u lossy.out.raw exact # -n 4 -r 8
+lossy_layers 45 37 12 u lossy_layers.out.raw exact # -n 4 -r 20,8
+w1 1 37 12 u w1.raw exact # -n 1
+h1 37 1 12 u h1.raw exact # -n 1
+one 1 1 12 u one.raw exact # -n 1
+zero 64 64 8 u zero.raw exact # -n 4
+irr 45 37 12 u - error:qmfbid # -n 4 -I
+sub 45 37 12 u img12u.raw exact # -n 4 -s 2,2
+csiz3 8 8 8 u - error:component # -n 2 (3 components)

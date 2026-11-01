@@ -21,6 +21,7 @@ const (
 	DataPreprocess uint32 = 8  // AEC_DATA_PREPROCESS: use preprocessor
 	Restricted     uint32 = 16 // AEC_RESTRICTED: restricted code options
 	PadRSI         uint32 = 32 // AEC_PAD_RSI: pad RSI to byte boundary
+	NotEnforce     uint32 = 64 // AEC_NOT_ENFORCE: encoder accepts any even block size up to 256
 )
 
 // Options configures the AEC decoder.
@@ -76,10 +77,10 @@ type decoder struct {
 	sampleCounter int
 
 	// RSI buffer
-	rsiBuf    []uint32
-	rsip      int // write position in rsiBuf
-	flushPos  int // first not-yet-flushed position in rsiBuf
-	lastOut   int32
+	rsiBuf   []uint32
+	rsip     int // write position in rsiBuf
+	flushPos int // first not-yet-flushed position in rsiBuf
+	lastOut  int32
 
 	// SE table
 	seTable [2 * (seTableSize + 1)]int
@@ -179,7 +180,7 @@ func (d *decoder) init() error {
 		}
 	}
 
-	d.inBlkLen = (d.blockSize*d.bitsPerSample + d.idLen) / 8 + 16
+	d.inBlkLen = (d.blockSize*d.bitsPerSample+d.idLen)/8 + 16
 
 	modi := 1 << d.idLen
 	d.idTable = make([]int, modi)
@@ -249,8 +250,22 @@ func (d *decoder) decode() error {
 }
 
 // collectOutput returns the accumulated output samples as int32.
+//
+// With DataSigned every sample comes back sign-extended. The postprocessor
+// already yields sign-extended values; without preprocessing the raw
+// BitsPerSample-bit patterns are sign-extended here, so the result does not
+// depend on DataPreprocess (libaec leaves them as raw bit patterns in its
+// byte output).
 func (d *decoder) collectOutput() []int32 {
 	result := make([]int32, len(d.output))
+	if d.flags&DataSigned != 0 && !d.pp && d.bitsPerSample < 32 {
+		m := uint32(1) << (d.bitsPerSample - 1)
+		mask := uint32((uint64(1) << d.bitsPerSample) - 1)
+		for i, v := range d.output {
+			result[i] = int32(((v & mask) ^ m) - m)
+		}
+		return result
+	}
 	for i, v := range d.output {
 		result[i] = int32(v)
 	}

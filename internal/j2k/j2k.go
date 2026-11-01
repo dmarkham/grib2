@@ -1,6 +1,6 @@
 // Package j2k implements a pure-Go JPEG 2000 codestream decoder for the
-// subset used by GRIB2: single component, single tile, lossless (5/3 DWT),
-// LRCP progression, no MCT, raw J2K codestream (not JP2).
+// subset used by GRIB2. The decoder lives in decode.go (single component,
+// reversible 5/3 wavelet, raw J2K codestream; see its doc comment).
 //
 // The implementation follows ISO 15444-1 and is modelled after OpenJPEG.
 //
@@ -54,15 +54,15 @@ const (
 
 // sizMarker holds data extracted from the SIZ marker (Table A.9).
 type sizMarker struct {
-	rsiz uint16 // capabilities
-	xsiz uint32 // image width (reference grid)
-	ysiz uint32 // image height
-	x0   uint32 // horizontal offset of origin
-	y0   uint32 // vertical offset of origin
+	rsiz  uint16 // capabilities
+	xsiz  uint32 // image width (reference grid)
+	ysiz  uint32 // image height
+	x0    uint32 // horizontal offset of origin
+	y0    uint32 // vertical offset of origin
 	xtSiz uint32 // tile width
 	ytSiz uint32 // tile height
-	xt0  uint32 // horizontal offset of first tile origin
-	yt0  uint32 // vertical offset of first tile origin
+	xt0   uint32 // horizontal offset of first tile origin
+	yt0   uint32 // vertical offset of first tile origin
 
 	ncomp uint16 // number of components (expected 1 for GRIB2)
 	prec  uint8  // bit depth (Ssiz bits 0..6 + 1)
@@ -73,26 +73,26 @@ type sizMarker struct {
 
 // codMarker holds data extracted from the COD marker (Table A.12).
 type codMarker struct {
-	csty       uint8  // coding style
-	progOrder  uint8  // progression order (SGcod A)
-	numLayers  uint16 // number of layers (SGcod B)
-	mct        uint8  // multiple component transform (SGcod C; 0 for GRIB2)
+	csty      uint8  // coding style
+	progOrder uint8  // progression order (SGcod A)
+	numLayers uint16 // number of layers (SGcod B)
+	mct       uint8  // multiple component transform (SGcod C; 0 for GRIB2)
 
 	// SPcod parameters (Table A.13)
-	numResolutions uint8  // number of decomposition levels + 1
-	cblkExpnW      uint8  // code-block width exponent (value + 2)
-	cblkExpnH      uint8  // code-block height exponent (value + 2)
-	cblkSty        uint8  // code-block style (SPcod G)
-	qmfbid         uint8  // wavelet transform: 0 = 9/7 irreversible, 1 = 5/3 reversible
-	precincts      bool   // true if custom precinct sizes present
+	numResolutions uint8   // number of decomposition levels + 1
+	cblkExpnW      uint8   // code-block width exponent (value + 2)
+	cblkExpnH      uint8   // code-block height exponent (value + 2)
+	cblkSty        uint8   // code-block style (SPcod G)
+	qmfbid         uint8   // wavelet transform: 0 = 9/7 irreversible, 1 = 5/3 reversible
+	precincts      bool    // true if custom precinct sizes present
 	prcW           []uint8 // per-resolution precinct width exponents
 	prcH           []uint8 // per-resolution precinct height exponents
 }
 
 // qcdMarker holds data extracted from the QCD marker (Table A.27).
 type qcdMarker struct {
-	qntsty  uint8 // quantization style (bits 0..4)
-	numGB   uint8 // number of guard bits (bits 5..7)
+	qntsty    uint8 // quantization style (bits 0..4)
+	numGB     uint8 // number of guard bits (bits 5..7)
 	stepsizes []stepSize
 }
 
@@ -103,8 +103,8 @@ type stepSize struct {
 
 // sotMarker holds data extracted from the SOT marker (Table A.14).
 type sotMarker struct {
-	isot uint16 // tile index
-	psot uint32 // length of tile-part (0 means till EOC)
+	isot  uint16 // tile index
+	psot  uint32 // length of tile-part (0 means till EOC)
 	tpsot uint8  // tile-part index
 	tnsot uint8  // number of tile-parts
 }
@@ -280,85 +280,6 @@ func (t *tagTree) decode(br *bitReader, leafno int, threshold int32) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Bit reader for T2 packet headers (ISO 15444-1 Annex C.4)
-// ---------------------------------------------------------------------------
-
-// bitReader reads individual bits from a byte slice.
-// After all header bits are consumed, inalign() byte-aligns the stream.
-type bitReader struct {
-	data []byte
-	pos  int    // byte position
-	buf  uint32 // current byte buffer
-	ct   int    // bits remaining in buf
-	start int   // starting offset (for computing consumed bytes)
-}
-
-func newBitReader(data []byte) *bitReader {
-	br := &bitReader{data: data, start: 0}
-	return br
-}
-
-// readBit reads a single bit.
-func (br *bitReader) readBit() uint32 {
-	if br.ct == 0 {
-		br.byteIn()
-	}
-	br.ct--
-	return (br.buf >> uint(br.ct)) & 1
-}
-
-// readBits reads n bits (n <= 32).
-func (br *bitReader) readBits(n int) uint32 {
-	var v uint32
-	for i := 0; i < n; i++ {
-		v = (v << 1) | br.readBit()
-	}
-	return v
-}
-
-// byteIn fetches the next byte into the bit buffer, handling the 0xFF
-// bit-stuffing rule.
-func (br *bitReader) byteIn() {
-	if br.pos >= len(br.data) {
-		br.buf = 0xFF
-		br.ct = 8
-		return
-	}
-	b := br.data[br.pos]
-	br.pos++
-	if br.buf == 0xFF {
-		// After a 0xFF byte, only 7 bits are valid (bit stuffing).
-		br.buf = uint32(b)
-		br.ct = 7
-	} else {
-		br.buf = uint32(b)
-		br.ct = 8
-	}
-}
-
-// inalign byte-aligns the reader, discarding remaining bits in the
-// current byte. Returns false if unexpected non-zero bits remain.
-func (br *bitReader) inalign() bool {
-	if br.ct > 0 {
-		// Discard remaining bits -- spec says they should be zero.
-		br.ct = 0
-	}
-	// After alignment, if the previous byte was 0xFF, the next byte
-	// is a stuffing byte and should be skipped.
-	if br.pos > 0 && br.pos <= len(br.data) && br.data[br.pos-1] == 0xFF {
-		if br.pos < len(br.data) && br.data[br.pos] < 0x90 {
-			br.pos++ // skip stuffed byte
-		}
-	}
-	return true
-}
-
-// numBytes returns the number of bytes consumed so far.
-func (br *bitReader) numBytes() int {
-	return br.pos - br.start
-}
-
-// ---------------------------------------------------------------------------
 // T2 packet header structures
 // ---------------------------------------------------------------------------
 
@@ -374,11 +295,11 @@ type cblkInfo struct {
 	segments []cblkSegment
 
 	// Accumulated across layers.
-	numSegs      int
-	numNewPasses int
-	numLenBits   int
+	numSegs       int
+	numNewPasses  int
+	numLenBits    int
 	zeroBitPlanes int
-	included     bool // ever included in any layer
+	included      bool // ever included in any layer
 }
 
 // cblkSegment holds one coding pass segment of a code block.
@@ -391,9 +312,9 @@ type cblkSegment struct {
 
 // bandInfo describes one subband within a resolution.
 type bandInfo struct {
-	orient int // 0=LL/LH, 1=HL, 2=HH (or for res 0: 0=LL)
+	orient         int // 0=LL/LH, 1=HL, 2=HH (or for res 0: 0=LL)
 	x0, y0, x1, y1 int
-	numbps int // number of magnitude bit planes
+	numbps         int // number of magnitude bit planes
 
 	// Precinct info.
 	precincts []precinctInfo
@@ -401,8 +322,8 @@ type bandInfo struct {
 
 // precinctInfo describes one precinct within a band.
 type precinctInfo struct {
-	cw, ch  int // codeblock grid size
-	cblks   []cblkInfo
+	cw, ch   int // codeblock grid size
+	cblks    []cblkInfo
 	inclTree *tagTree
 	imsbTree *tagTree
 }
@@ -419,8 +340,8 @@ type resolutionInfo struct {
 // tileComp holds the decoded tile component.
 type tileComp struct {
 	x0, y0, x1, y1 int
-	resolutions     []resolutionInfo
-	data            []int32 // decoded coefficient/sample buffer
+	resolutions    []resolutionInfo
+	data           []int32 // decoded coefficient/sample buffer
 }
 
 // ---------------------------------------------------------------------------
@@ -433,280 +354,6 @@ func readUint16(data []byte, off int) uint16 {
 
 func readUint32(data []byte, off int) uint32 {
 	return binary.BigEndian.Uint32(data[off:])
-}
-
-// ---------------------------------------------------------------------------
-// Marker parsing
-// ---------------------------------------------------------------------------
-
-func parseSIZ(data []byte) (sizMarker, error) {
-	var s sizMarker
-	if len(data) < 36 {
-		return s, errors.New("j2k: SIZ marker too short")
-	}
-	s.rsiz = readUint16(data, 0)
-	s.xsiz = readUint32(data, 2)
-	s.ysiz = readUint32(data, 6)
-	s.x0 = readUint32(data, 10)
-	s.y0 = readUint32(data, 14)
-	s.xtSiz = readUint32(data, 18)
-	s.ytSiz = readUint32(data, 22)
-	s.xt0 = readUint32(data, 26)
-	s.yt0 = readUint32(data, 30)
-	s.ncomp = readUint16(data, 34)
-	if int(s.ncomp)*3+36 > len(data) {
-		return s, errors.New("j2k: SIZ marker component data truncated")
-	}
-
-	// Read first component.
-	off := 36
-	ssiz := data[off]
-	s.sgnd = (ssiz >> 7) != 0
-	s.prec = (ssiz & 0x7F) + 1
-	s.xrsiz = data[off+1]
-	s.yrsiz = data[off+2]
-
-	return s, nil
-}
-
-func parseCOD(data []byte) (codMarker, error) {
-	var c codMarker
-	if len(data) < 5 {
-		return c, errors.New("j2k: COD marker too short")
-	}
-	c.csty = data[0]
-	c.progOrder = data[1]
-	c.numLayers = readUint16(data, 2)
-	c.mct = data[4]
-
-	// SPcod (starts at offset 5)
-	if len(data) < 10 {
-		return c, errors.New("j2k: COD SPcod too short")
-	}
-	c.numResolutions = data[5] + 1
-	c.cblkExpnW = data[6] + 2
-	c.cblkExpnH = data[7] + 2
-	c.cblkSty = data[8]
-	c.qmfbid = data[9]
-
-	// Custom precinct sizes?
-	c.precincts = (c.csty & 0x01) != 0
-	if c.precincts {
-		nres := int(c.numResolutions)
-		if len(data) < 10+nres {
-			return c, errors.New("j2k: COD precinct data truncated")
-		}
-		c.prcW = make([]uint8, nres)
-		c.prcH = make([]uint8, nres)
-		for i := 0; i < nres; i++ {
-			c.prcW[i] = data[10+i] & 0x0F
-			c.prcH[i] = (data[10+i] >> 4) & 0x0F
-		}
-	}
-
-	return c, nil
-}
-
-func parseQCD(data []byte) (qcdMarker, error) {
-	var q qcdMarker
-	if len(data) < 1 {
-		return q, errors.New("j2k: QCD marker too short")
-	}
-	sqcd := data[0]
-	q.qntsty = sqcd & 0x1F
-	q.numGB = sqcd >> 5
-
-	rest := data[1:]
-	switch q.qntsty {
-	case qntstyNone:
-		// Each step size is 1 byte: exponent in bits 3..7, mantissa=0.
-		for _, b := range rest {
-			q.stepsizes = append(q.stepsizes, stepSize{expn: int32(b >> 3)})
-		}
-	case qntstySIQNT:
-		// Single step size: 2 bytes.
-		if len(rest) < 2 {
-			return q, errors.New("j2k: QCD SIQNT data too short")
-		}
-		val := readUint16(rest, 0)
-		q.stepsizes = append(q.stepsizes, stepSize{
-			expn: int32(val >> 11),
-			mant: int32(val & 0x7FF),
-		})
-	case qntstySQNT:
-		// Explicit per-subband: 2 bytes each.
-		for i := 0; i+1 < len(rest); i += 2 {
-			val := readUint16(rest, i)
-			q.stepsizes = append(q.stepsizes, stepSize{
-				expn: int32(val >> 11),
-				mant: int32(val & 0x7FF),
-			})
-		}
-	default:
-		return q, fmt.Errorf("j2k: unknown quantization style %d", q.qntsty)
-	}
-
-	return q, nil
-}
-
-func parseSOT(data []byte) (sotMarker, error) {
-	var s sotMarker
-	if len(data) < 8 {
-		return s, errors.New("j2k: SOT marker too short")
-	}
-	s.isot = readUint16(data, 0)
-	s.psot = readUint32(data, 2)
-	s.tpsot = data[6]
-	s.tnsot = data[7]
-	return s, nil
-}
-
-// parseCodestream reads the full J2K codestream and returns a populated
-// codestream structure.
-func parseCodestream(data []byte) (*codestream, error) {
-	cs := &codestream{}
-	pos := 0
-
-	if len(data) < 2 {
-		return nil, errors.New("j2k: data too short for SOC")
-	}
-	if readUint16(data, pos) != markerSOC {
-		return nil, errors.New("j2k: missing SOC marker")
-	}
-	pos += 2
-
-	haveSIZ := false
-	haveCOD := false
-	haveQCD := false
-	haveSOT := false
-
-	for pos+2 <= len(data) {
-		marker := readUint16(data, pos)
-		pos += 2
-
-		switch marker {
-		case markerSOC:
-			// Already consumed above; should not appear again.
-			return nil, errors.New("j2k: unexpected second SOC")
-
-		case markerEOC:
-			// End of codestream.
-			goto done
-
-		case markerSOD:
-			// Everything after SOD until EOC (or end of tile-part) is tile data.
-			if !haveSOT {
-				return nil, errors.New("j2k: SOD without preceding SOT")
-			}
-			// Compute remaining tile data length.
-			tileDataLen := 0
-			if cs.sot.psot != 0 {
-				// psot includes the SOT marker (2) + Lsot (2) + body (8) + SOD (2) + data
-				// Total SOT segment length on wire = 12 bytes.
-				// psot = total tile-part length from SOT marker to end of data.
-				// SOT(2) + Lsot(2) + SOT_body(8) = 12, SOD(2) already consumed.
-				// So tile data = psot - 12 - 2 (SOD marker already consumed by us at +2 above)
-				// Actually psot counts from the SOT marker itself through all tile data.
-				// psot = 2(SOT marker) + 2(Lsot) + 8(SOT body) + any_more_markers + 2(SOD marker) + data_bytes
-				// We track position: after SOT marker(2)+Lsot(2)+body(8) we continued scanning markers.
-				// After the SOD marker bytes(2) consumed here, pos points to tile data start.
-				// The tile-part end is at the position of the SOT marker + psot.
-				// We need to find the SOT marker position. Since we parsed SOT already,
-				// we reconstruct: sotStart = pos - (header_after_sot + 2 for SOD)
-				// This is tricky. Instead, if psot > 0, just scan for EOC or end.
-				// For GRIB2 (single tile), tile data runs to EOC or end of stream.
-				tileDataLen = len(data) - pos
-				// Check for EOC at the end.
-				if tileDataLen >= 2 && readUint16(data, pos+tileDataLen-2) == markerEOC {
-					tileDataLen -= 2
-				}
-			} else {
-				// psot=0 means tile extends to EOC.
-				tileDataLen = len(data) - pos
-				if tileDataLen >= 2 && readUint16(data, pos+tileDataLen-2) == markerEOC {
-					tileDataLen -= 2
-				}
-			}
-			cs.tileData = data[pos : pos+tileDataLen]
-			pos += tileDataLen
-			continue
-
-		default:
-			// Fixed-length marker segments: read Lmar (2 bytes), then body.
-			if pos+2 > len(data) {
-				return nil, fmt.Errorf("j2k: truncated marker segment 0x%04X", marker)
-			}
-			segLen := int(readUint16(data, pos))
-			pos += 2
-			if segLen < 2 {
-				return nil, fmt.Errorf("j2k: invalid segment length %d for marker 0x%04X", segLen, marker)
-			}
-			bodyLen := segLen - 2
-			if pos+bodyLen > len(data) {
-				return nil, fmt.Errorf("j2k: truncated body for marker 0x%04X", marker)
-			}
-			body := data[pos : pos+bodyLen]
-			pos += bodyLen
-
-			switch marker {
-			case markerSIZ:
-				var err error
-				cs.siz, err = parseSIZ(body)
-				if err != nil {
-					return nil, err
-				}
-				haveSIZ = true
-			case markerCOD:
-				var err error
-				cs.cod, err = parseCOD(body)
-				if err != nil {
-					return nil, err
-				}
-				haveCOD = true
-			case markerQCD:
-				var err error
-				cs.qcd, err = parseQCD(body)
-				if err != nil {
-					return nil, err
-				}
-				haveQCD = true
-			case markerSOT:
-				var err error
-				cs.sot, err = parseSOT(body)
-				if err != nil {
-					return nil, err
-				}
-				haveSOT = true
-			case markerCOM:
-				// Ignore comments.
-			default:
-				// Skip unknown markers.
-			}
-		}
-	}
-
-done:
-	if !haveSIZ {
-		return nil, errors.New("j2k: missing SIZ marker")
-	}
-	if !haveCOD {
-		return nil, errors.New("j2k: missing COD marker")
-	}
-	if !haveQCD {
-		return nil, errors.New("j2k: missing QCD marker")
-	}
-
-	// Validate GRIB2 subset constraints.
-	if cs.siz.ncomp != 1 {
-		return nil, fmt.Errorf("j2k: expected 1 component, got %d", cs.siz.ncomp)
-	}
-	if cs.cod.qmfbid != 1 {
-		return nil, fmt.Errorf("j2k: expected reversible 5/3 wavelet (qmfbid=1), got %d", cs.cod.qmfbid)
-	}
-
-	cs.width = int(cs.siz.xsiz - cs.siz.x0)
-	cs.height = int(cs.siz.ysiz - cs.siz.y0)
-	return cs, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,398 +653,6 @@ func floorLog2(n int) int {
 	return r
 }
 
-// segMaxPasses computes the maximum number of coding passes for a segment
-// (ISO 15444-1 B.10.6), given the code-block style and whether it is the
-// first segment.
-func segMaxPasses(cblkSty uint8, first bool) int {
-	if cblkSty&0x04 != 0 { // TERMALL
-		return 1
-	}
-	if cblkSty&0x01 != 0 { // LAZY / BYPASS
-		if first {
-			return 10
-		}
-		return 2 // alternates between 2 and 1
-	}
-	return 109
-}
-
-// parsePackets decodes all T2 packets from the tile data for a single
-// tile-component in LRCP order and populates the cblkInfo segments.
-func parsePackets(cs *codestream, tc *tileComp) error {
-	data := cs.tileData
-	pos := 0
-	numLayers := int(cs.cod.numLayers)
-	numRes := int(cs.cod.numResolutions)
-	cblkSty := cs.cod.cblkSty
-
-	// LRCP progression: layer, resolution, component (always 0), precinct.
-	for layno := 0; layno < numLayers; layno++ {
-		for resno := 0; resno < numRes; resno++ {
-			res := &tc.resolutions[resno]
-			nprc := res.pw * res.ph
-			for prcno := 0; prcno < nprc; prcno++ {
-				if pos >= len(data) {
-					// No more data; remaining packets are empty.
-					return nil
-				}
-
-				headerConsumed, dataConsumed, err := parseOnePacket(
-					data[pos:], layno, resno, prcno, res, cblkSty)
-				if err != nil {
-					return fmt.Errorf("j2k: T2 packet (l=%d r=%d p=%d): %w",
-						layno, resno, prcno, err)
-				}
-				pos += headerConsumed + dataConsumed
-			}
-		}
-	}
-	return nil
-}
-
-// parseOnePacket parses a single T2 packet (header + data) and returns
-// the number of bytes consumed for the header and for the data separately.
-func parseOnePacket(data []byte, layno, resno, prcno int,
-	res *resolutionInfo, cblkSty uint8) (headerLen int, dataLen int, err error) {
-
-	br := newBitReader(data)
-
-	// Packet present bit.
-	present := br.readBit()
-	if present == 0 {
-		br.inalign()
-		return br.numBytes(), 0, nil
-	}
-
-	// For each band in this resolution, for each codeblock in the precinct,
-	// read inclusion, zero-bitplane, number of passes, and data length info.
-	type cblkDataRef struct {
-		cb  *cblkInfo
-		totalNewLen int
-	}
-	var refs []cblkDataRef
-
-	for bandno := 0; bandno < len(res.bands); bandno++ {
-		band := &res.bands[bandno]
-		if prcno >= len(band.precincts) {
-			continue
-		}
-		prc := &band.precincts[prcno]
-		if band.x1-band.x0 <= 0 || band.y1-band.y0 <= 0 {
-			continue
-		}
-
-		nblocks := prc.cw * prc.ch
-		for cblkno := 0; cblkno < nblocks; cblkno++ {
-			cb := &prc.cblks[cblkno]
-
-			// Inclusion test.
-			var included bool
-			if !cb.included {
-				// First inclusion: use tag tree.
-				included = prc.inclTree.decode(br, cblkno, int32(layno+1))
-			} else {
-				included = br.readBit() != 0
-			}
-
-			if !included {
-				continue
-			}
-
-			// Zero bit-plane count (only on first inclusion).
-			if !cb.included {
-				zeroBP := int32(0)
-				const maxZeroBP = 256 // upper bound to prevent infinite loop on crafted data
-				for !prc.imsbTree.decode(br, cblkno, zeroBP) {
-					zeroBP++
-					if zeroBP > maxZeroBP {
-						return 0, 0, fmt.Errorf("zero bit-plane count exceeded maximum")
-					}
-				}
-				cb.zeroBitPlanes = int(zeroBP)
-				cb.numbps = band.numbps + 1 - int(zeroBP)
-				cb.numLenBits = 3
-				cb.included = true
-			}
-
-			// Number of new coding passes.
-			numNewPasses := getNumPasses(br)
-			cb.numNewPasses = numNewPasses
-
-			// Length indicator increment.
-			increment := getCommaCode(br)
-			cb.numLenBits += increment
-
-			// Read segment lengths.
-			totalNewLen := 0
-			n := numNewPasses
-			segIdx := cb.numSegs
-			first := segIdx == 0
-			for n > 0 {
-				maxp := segMaxPasses(cblkSty, first)
-				passesInSeg := maxp
-				if n < passesInSeg {
-					passesInSeg = n
-				}
-
-				// If there are existing segments, check if last one can absorb.
-				if segIdx > 0 && segIdx <= len(cb.segments) {
-					lastSeg := &cb.segments[segIdx-1]
-					remaining := lastSeg.maxPasses - lastSeg.numPasses
-					if remaining > 0 && first {
-						// Continue existing segment.
-						passesInSeg = imin(remaining, n)
-					}
-				}
-
-				bitsToRead := cb.numLenBits + floorLog2(passesInSeg)
-				segLen := int(br.readBits(bitsToRead))
-				totalNewLen += segLen
-
-				cb.segments = append(cb.segments, cblkSegment{
-					newLen:    segLen,
-					numPasses: passesInSeg,
-					maxPasses: maxp,
-				})
-				segIdx++
-
-				n -= passesInSeg
-				first = false
-			}
-			cb.numSegs = segIdx
-			refs = append(refs, cblkDataRef{cb: cb, totalNewLen: totalNewLen})
-		}
-	}
-
-	// Byte-align the bit reader.
-	br.inalign()
-	headerLen = br.numBytes()
-
-	// Now read the packet body: raw codeblock data.
-	bodyPos := headerLen
-	for _, ref := range refs {
-		for si := len(ref.cb.segments) - countNewSegments(ref.cb); si < len(ref.cb.segments); si++ {
-			seg := &ref.cb.segments[si]
-			end := bodyPos + seg.newLen
-			if end > len(data) {
-				return headerLen, bodyPos - headerLen, fmt.Errorf("segment data overrun")
-			}
-			seg.data = make([]byte, seg.newLen)
-			copy(seg.data, data[bodyPos:end])
-			bodyPos = end
-		}
-	}
-	dataLen = bodyPos - headerLen
-	return headerLen, dataLen, nil
-}
-
-// countNewSegments counts how many trailing segments in a cblk have
-// non-nil newLen (i.e. were just added in this packet).
-func countNewSegments(cb *cblkInfo) int {
-	n := 0
-	for i := len(cb.segments) - 1; i >= 0; i-- {
-		if cb.segments[i].data == nil && cb.segments[i].newLen > 0 {
-			n++
-		} else if cb.segments[i].data != nil {
-			n++
-			// Keep counting contiguous new segments.
-		} else {
-			break
-		}
-	}
-	return n
-}
-
-// ---------------------------------------------------------------------------
-// Top-level decode
-// ---------------------------------------------------------------------------
-
-// Decode decodes a raw JPEG 2000 codestream (the GRIB2 subset) and
-// returns the reconstructed integer sample values along with the image
-// dimensions.
-//
-// The caller provides the complete J2K codestream bytes (starting with
-// the SOC marker 0xFF4F).
-//
-// Prerequisites (in sibling files):
-//   - T1.DecodeCodeblock in t1.go
-//   - InverseDWT53 in dwt.go
-func Decode(data []byte) (samples []int32, width, height int, err error) {
-	cs, err := parseCodestream(data)
-	if err != nil {
-		return nil, 0, 0, err
-	}
-	width = cs.width
-	height = cs.height
-
-	if width <= 0 || height <= 0 {
-		return nil, 0, 0, errors.New("j2k: zero or negative image dimensions")
-	}
-
-	// Cap image size to prevent huge allocations from crafted SIZ markers.
-	const maxPixels = 100_000_000
-	if int64(width)*int64(height) > maxPixels {
-		return nil, 0, 0, fmt.Errorf("j2k: image size %d x %d exceeds maximum %d pixels", width, height, maxPixels)
-	}
-
-	// Build the tile-component geometry.
-	tc := setupTileComponent(cs)
-
-	// Parse T2 packets (fills in codeblock segments).
-	if err := parsePackets(cs, tc); err != nil {
-		return nil, 0, 0, err
-	}
-
-	numRes := int(cs.cod.numResolutions)
-	numDecomp := numRes - 1
-
-	// Allocate the tile coefficient buffer at full resolution.
-	w := tc.x1 - tc.x0
-	h := tc.y1 - tc.y0
-	coeffs := make([]int32, w*h)
-
-	// Tier-1: decode each codeblock and place coefficients into the
-	// appropriate subband region of the coefficient buffer.
-	t1dec := NewT1()
-	for r := 0; r < numRes; r++ {
-		res := &tc.resolutions[r]
-		for bandno := 0; bandno < len(res.bands); bandno++ {
-			band := &res.bands[bandno]
-			if band.x1-band.x0 <= 0 || band.y1-band.y0 <= 0 {
-				continue
-			}
-			for _, prc := range band.precincts {
-				for cblkIdx := range prc.cblks {
-					cb := &prc.cblks[cblkIdx]
-					if !cb.included || len(cb.segments) == 0 {
-						continue
-					}
-
-					cbW := cb.x1 - cb.x0
-					cbH := cb.y1 - cb.y0
-					if cbW <= 0 || cbH <= 0 {
-						continue
-					}
-
-					// Build T1 segment descriptors from the internal segments.
-					t1segs := make([]T1Seg, len(cb.segments))
-					for si, seg := range cb.segments {
-						t1segs[si] = T1Seg{
-							Data:          seg.data,
-							Len:           uint32(len(seg.data)),
-							RealNumPasses: uint32(seg.numPasses),
-						}
-					}
-
-					// T1 decode: produce coefficient block.
-					decoded, decErr := t1dec.DecodeCodeblock(
-						uint32(cbW), uint32(cbH),
-						uint32(band.orient), 0, // roishift=0 for GRIB2
-						uint32(cs.cod.cblkSty),
-						uint32(cb.numbps),
-						t1segs)
-					if decErr != nil {
-						return nil, 0, 0, fmt.Errorf("j2k: T1 decode failed: %w", decErr)
-					}
-
-					// Lossless (qmfbid=1): divide by 2 for final wavelet coefficients.
-					for di := range decoded {
-						decoded[di] /= 2
-					}
-
-					// Place decoded coefficients into the full-resolution
-					// coefficient buffer at the correct subband position.
-					placeCoefficients(coeffs, w, h, decoded, cb, band, numDecomp, r)
-				}
-			}
-		}
-	}
-
-	// Inverse DWT: reconstruct samples from wavelet coefficients.
-	if err := InverseDWT53(coeffs, w, h, numRes); err != nil {
-		return nil, 0, 0, fmt.Errorf("j2k: inverse DWT failed: %w", err)
-	}
-
-	// DC level shift: for unsigned components, add 2^(prec-1).
-	if !cs.siz.sgnd {
-		dcShift := int32(1) << (cs.siz.prec - 1)
-		for i := range coeffs {
-			coeffs[i] += dcShift
-		}
-	}
-
-	return coeffs, width, height, nil
-}
-
-// placeCoefficients writes a decoded codeblock's coefficients into the
-// interleaved coefficient buffer at the position corresponding to the
-// codeblock's subband location.
-//
-// For the JPEG 2000 5/3 DWT, the coefficient buffer is laid out as:
-//
-//	+------+------+
-//	|  LL  |  HL  |
-//	+------+------+
-//	|  LH  |  HH  |
-//	+------+------+
-//
-// (recursively for lower resolution levels).
-func placeCoefficients(coeffs []int32, stride, totalH int,
-	decoded []int32, cb *cblkInfo, band *bandInfo, numDecomp, resno int) {
-
-	cbW := cb.x1 - cb.x0
-	cbH := cb.y1 - cb.y0
-
-	// Compute the offset of this subband in the coefficient buffer.
-	// For resolution 0 (LL band), the subband sits at the top-left of the
-	// lowest-resolution LL region.
-	// For resolution r > 0, the subbands are:
-	//   HL at (halfW, 0) relative to that resolution's LL
-	//   LH at (0, halfH)
-	//   HH at (halfW, halfH)
-	// The "half" sizes at each level depend on the decomposition.
-
-	var offX, offY int
-	if resno == 0 {
-		offX = 0
-		offY = 0
-	} else {
-		level := numDecomp - resno
-		// At this decomposition level, the LL region size is:
-		halfW := ceildivpow2(stride, level+1)
-		halfH := ceildivpow2(totalH, level+1)
-		switch band.orient {
-		case 1: // HL
-			offX = halfW
-			offY = 0
-		case 2: // LH
-			offX = 0
-			offY = halfH
-		case 3: // HH
-			offX = halfW
-			offY = halfH
-		}
-	}
-
-	// The codeblock's position relative to the band origin.
-	relX := cb.x0 - band.x0
-	relY := cb.y0 - band.y0
-
-	for y := 0; y < cbH; y++ {
-		dy := offY + relY + y
-		if dy >= totalH {
-			break
-		}
-		for x := 0; x < cbW; x++ {
-			dx := offX + relX + x
-			if dx >= stride {
-				break
-			}
-			coeffs[dy*stride+dx] = decoded[y*cbW+x]
-		}
-	}
-}
-
 // =========================================================================
 // Encoder
 // =========================================================================
@@ -1434,29 +689,58 @@ func Encode(samples []int32, width, height, prec int) ([]byte, error) {
 
 // EncodeWithOptions encodes samples into a raw JPEG 2000 codestream
 // with explicit control over the number of decomposition levels.
+//
+// Samples must lie in [0, 2^prec-1] and prec must be in 1..31. An error is
+// returned (rather than a corrupt codestream) when the wavelet
+// coefficients would need 31 or more magnitude bit-planes, which no
+// conforming decoder (OpenJPEG included) can reconstruct; this can only
+// happen at precisions of 29 bits and above.
 func EncodeWithOptions(samples []int32, width, height, prec, numDecomp int) ([]byte, error) {
 	if width <= 0 || height <= 0 {
 		return nil, errors.New("j2k: zero or negative image dimensions")
 	}
+	if prec < 1 || prec > maxPrec {
+		return nil, fmt.Errorf("j2k: precision %d out of range 1..%d", prec, maxPrec)
+	}
+	if numDecomp < 0 || numDecomp > 32 {
+		return nil, fmt.Errorf("j2k: %d decomposition levels out of range 0..32", numDecomp)
+	}
+	if int64(width)*int64(height) > maxPixels {
+		return nil, fmt.Errorf("j2k: image size %d x %d exceeds maximum %d pixels", width, height, maxPixels)
+	}
 	if len(samples) < width*height {
 		return nil, errors.New("j2k: samples buffer shorter than width*height")
 	}
+	n := width * height
 	numRes := numDecomp + 1
 
 	// Code-block size exponents.
 	cbExpW := 6 // 64
 	cbExpH := 6 // 64
 
-	// DC level shift: for unsigned components, subtract 2^(prec-1).
-	coeffs := make([]int32, width*height)
-	dcShift := int32(1) << (prec - 1)
-	for i, v := range samples[:width*height] {
-		coeffs[i] = v - dcShift
+	// DC level shift (unsigned component), then the forward DWT in int64
+	// so that the lifting steps cannot overflow.
+	maxVal := int64(1)<<uint(prec) - 1
+	dcShift := int64(1) << uint(prec-1)
+	c64 := make([]int64, n)
+	for i, v := range samples[:n] {
+		if v < 0 || int64(v) > maxVal {
+			return nil, fmt.Errorf("j2k: sample %d = %d outside [0, %d] for precision %d", i, v, maxVal, prec)
+		}
+		c64[i] = int64(v) - dcShift
 	}
-
-	// Forward DWT.
-	if err := ForwardDWT53(coeffs, width, height, numRes); err != nil {
+	if err := forwardDWT53(c64, width, height, numRes); err != nil {
 		return nil, fmt.Errorf("j2k: forward DWT failed: %w", err)
+	}
+	// The T1 coder (here and in OpenJPEG) holds magnitude plus one
+	// fractional bit in an int32 and decoders reject 31+ bit-planes.
+	const maxMag = int64(1)<<30 - 1
+	coeffs := make([]int32, n)
+	for i, v := range c64 {
+		if v > maxMag || v < -maxMag {
+			return nil, fmt.Errorf("j2k: precision %d: wavelet coefficient %d needs more than 30 magnitude bit-planes", prec, v)
+		}
+		coeffs[i] = int32(v)
 	}
 
 	// Build a codestream structure to reuse setupTileComponent.
@@ -1493,41 +777,39 @@ func EncodeWithOptions(samples []int32, width, height, prec, numDecomp int) ([]b
 		height: height,
 	}
 
-	// Build QCD: reversible (no quantization), guard bits = 2.
+	// Build QCD: reversible (no quantization). For the reversible 5/3
+	// transform the epsilon_b values follow OpenJPEG: prec + gain, with
+	// gain 0 for LL, 1 for HL/LH and 2 for HH. The guard bits are chosen
+	// below so that every code-block's bit-planes fit in Mb.
 	numBands := 1 + 3*numDecomp
 	cs.qcd.qntsty = qntstyNone
 	cs.qcd.numGB = 2
 	cs.qcd.stepsizes = make([]stepSize, numBands)
-	// For the reversible 5/3 transform with no quantization (qntsty=0),
-	// the epsilon_b values follow the convention from openjpeg:
-	//   epsilon_b = prec + gain
-	// where gain depends on the subband orientation:
-	//   LL/HL=0: gain = 0
-	//   HL(orient=1), LH(orient=2): gain = 1
-	//   HH(orient=3): gain = 2
 	for i := 0; i < numBands; i++ {
 		var gain int
-		if i == 0 {
-			gain = 0 // LL band
-		} else {
-			orient := (i-1)%3 + 1 // 1=HL, 2=LH, 3=HH
-			switch orient {
+		if i > 0 {
+			switch (i-1)%3 + 1 { // 1=HL, 2=LH, 3=HH
 			case 1, 2:
 				gain = 1
 			case 3:
 				gain = 2
 			}
 		}
-		cs.qcd.stepsizes[i] = stepSize{expn: int32(prec + gain)}
+		// The exponent field is 5 bits; any shortfall is made up by the
+		// guard bits.
+		cs.qcd.stepsizes[i] = stepSize{expn: int32(imin(prec+gain, 31))}
 	}
 
 	tc := setupTileComponent(cs)
 
 	// Extract coefficients for each codeblock and encode.
-
 	t1enc := NewT1Encoder()
 	cblkResults := make(map[*cblkInfo]encodedCblk)
-
+	type cblkBand struct {
+		cb   *cblkInfo
+		expn int
+	}
+	var order []cblkBand
 	for r := 0; r < numRes; r++ {
 		res := &tc.resolutions[r]
 		for bandno := 0; bandno < len(res.bands); bandno++ {
@@ -1535,6 +817,11 @@ func EncodeWithOptions(samples []int32, width, height, prec, numDecomp int) ([]b
 			if band.x1-band.x0 <= 0 || band.y1-band.y0 <= 0 {
 				continue
 			}
+			bandIdx := 0
+			if r > 0 {
+				bandIdx = 1 + (r-1)*3 + bandno
+			}
+			expn := int(cs.qcd.stepsizes[bandIdx].expn)
 			for prcIdx := range band.precincts {
 				prc := &band.precincts[prcIdx]
 				for cblkIdx := range prc.cblks {
@@ -1544,54 +831,52 @@ func EncodeWithOptions(samples []int32, width, height, prec, numDecomp int) ([]b
 					if cbW <= 0 || cbH <= 0 {
 						continue
 					}
-
-					// Extract coefficients from the coefficient buffer.
 					cbCoeffs := extractCoefficients(coeffs, width, height,
 						cb, band, numDecomp, r)
-
 					result := t1enc.EncodeCodeblock(cbCoeffs,
 						uint32(cbW), uint32(cbH),
-						uint32(band.orient),
-						uint32(band.numbps))
-
-					zbp := band.numbps - result.NumBPS
-					if zbp < 0 {
-						zbp = 0
-					}
-
-					cblkResults[cb] = encodedCblk{
-						result: result,
-						zbp:    zbp,
-					}
+						uint32(band.orient), 30)
+					cblkResults[cb] = encodedCblk{result: result}
+					order = append(order, cblkBand{cb, expn})
 				}
 			}
 		}
 	}
 
+	// Guard bits: Mb = expn + G - 1 must cover every code-block.
+	for _, o := range order {
+		if need := cblkResults[o.cb].result.NumBPS - o.expn + 1; need > int(cs.qcd.numGB) {
+			cs.qcd.numGB = uint8(need)
+		}
+	}
+	if cs.qcd.numGB > 7 {
+		return nil, fmt.Errorf("j2k: precision %d: coefficients need %d guard bits (maximum 7)", prec, cs.qcd.numGB)
+	}
+	for _, o := range order {
+		e := cblkResults[o.cb]
+		e.zbp = o.expn + int(cs.qcd.numGB) - 1 - e.result.NumBPS
+		cblkResults[o.cb] = e
+	}
+
 	// Now write the codestream.
 	out := newBitWriter(width*height*4 + 4096) // generous initial capacity
 
-	// SOC
 	out.writeUint16(markerSOC)
-
-	// SIZ
 	writeSIZMarker(out, cs)
-
-	// COD
 	writeCODMarker(out, cs)
-
-	// QCD
 	writeQCDMarker(out, cs)
 
-	// SOT
+	// SOT. Psot is patched once the tile-part length is known: Jasper
+	// (wgrib2, g2clib and the default eccodes build) rejects Psot=0.
+	sotStart := out.pos()
 	out.writeUint16(markerSOT)
 	out.writeUint16(10) // Lsot
 	out.writeUint16(0)  // Isot (tile index)
-	out.writeUint32(0)  // Psot = 0 means tile extends to EOC
-	out.writeByte(0)    // TPsot
-	out.writeByte(1)    // TNsot
+	psotPos := out.pos()
+	out.writeUint32(0) // Psot, patched below
+	out.writeByte(0)   // TPsot
+	out.writeByte(1)   // TNsot
 
-	// SOD
 	out.writeUint16(markerSOD)
 
 	// T2: write packets (single layer, LRCP).
@@ -1602,8 +887,8 @@ func EncodeWithOptions(samples []int32, width, height, prec, numDecomp int) ([]b
 			writePacket(out, res, prcno, cblkResults)
 		}
 	}
+	binary.BigEndian.PutUint32(out.data[psotPos:], uint32(out.pos()-sotStart))
 
-	// EOC
 	out.writeUint16(markerEOC)
 
 	return out.bytes(), nil
@@ -1772,36 +1057,36 @@ func writeSIZMarker(out *bitWriter, cs *codestream) {
 	lsiz := 38 + int(siz.ncomp)*3 // Lsiz includes itself (2 bytes)
 	out.writeUint16(markerSIZ)
 	out.writeUint16(uint16(lsiz)) // Lsiz
-	out.writeUint16(siz.rsiz)       // Rsiz
-	out.writeUint32(siz.xsiz)       // Xsiz
-	out.writeUint32(siz.ysiz)       // Ysiz
-	out.writeUint32(siz.x0)         // XOsiz
-	out.writeUint32(siz.y0)         // YOsiz
-	out.writeUint32(siz.xtSiz)      // XTsiz
-	out.writeUint32(siz.ytSiz)      // YTsiz
-	out.writeUint32(siz.xt0)        // XTOsiz
-	out.writeUint32(siz.yt0)        // YTOsiz
-	out.writeUint16(siz.ncomp)      // Csiz
+	out.writeUint16(siz.rsiz)     // Rsiz
+	out.writeUint32(siz.xsiz)     // Xsiz
+	out.writeUint32(siz.ysiz)     // Ysiz
+	out.writeUint32(siz.x0)       // XOsiz
+	out.writeUint32(siz.y0)       // YOsiz
+	out.writeUint32(siz.xtSiz)    // XTsiz
+	out.writeUint32(siz.ytSiz)    // YTsiz
+	out.writeUint32(siz.xt0)      // XTOsiz
+	out.writeUint32(siz.yt0)      // YTOsiz
+	out.writeUint16(siz.ncomp)    // Csiz
 
 	// Component parameters.
 	ssiz := uint8(siz.prec - 1)
 	if siz.sgnd {
 		ssiz |= 0x80
 	}
-	out.writeByte(ssiz)       // Ssiz
-	out.writeByte(siz.xrsiz)  // XRsiz
-	out.writeByte(siz.yrsiz)  // YRsiz
+	out.writeByte(ssiz)      // Ssiz
+	out.writeByte(siz.xrsiz) // XRsiz
+	out.writeByte(siz.yrsiz) // YRsiz
 }
 
 func writeCODMarker(out *bitWriter, cs *codestream) {
 	cod := &cs.cod
 	bodyLen := 12 // Lcod(2) + Scod(1) + SGcod(4) + SPcod(5)
 	out.writeUint16(markerCOD)
-	out.writeUint16(uint16(bodyLen)) // Lcod
-	out.writeByte(cod.csty)          // Scod
-	out.writeByte(cod.progOrder)     // SGcod A: progression order
-	out.writeUint16(cod.numLayers)   // SGcod B: number of layers
-	out.writeByte(cod.mct)           // SGcod C: MCT
+	out.writeUint16(uint16(bodyLen))      // Lcod
+	out.writeByte(cod.csty)               // Scod
+	out.writeByte(cod.progOrder)          // SGcod A: progression order
+	out.writeUint16(cod.numLayers)        // SGcod B: number of layers
+	out.writeByte(cod.mct)                // SGcod C: MCT
 	out.writeByte(cod.numResolutions - 1) // SPcod A: number of decomposition levels
 	out.writeByte(cod.cblkExpnW - 2)      // SPcod B: code-block width exponent
 	out.writeByte(cod.cblkExpnH - 2)      // SPcod C: code-block height exponent
@@ -1846,11 +1131,11 @@ func writeQCDMarker(out *bitWriter, cs *codestream) {
 // The decoder's algorithm (from tagTree.decode):
 //   - Walk from leaf to root, build stack
 //   - From root to leaf:
-//     - Sync low with node.low
-//     - While low < threshold && low < node.value: read bit
-//       - If bit == 1: node.value = low (value found at this level)
-//       - If bit == 0: low++ (value is higher)
-//     - Update node.low = low
+//   - Sync low with node.low
+//   - While low < threshold && low < node.value: read bit
+//   - If bit == 1: node.value = low (value found at this level)
+//   - If bit == 0: low++ (value is higher)
+//   - Update node.low = low
 //
 // The encoder writes the bits that the decoder expects to read.
 func tagTreeEncode(bw *bitWriter, tt *tagTree, leafno int, threshold int32) {

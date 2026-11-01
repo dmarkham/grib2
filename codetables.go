@@ -1112,21 +1112,23 @@ func (s Section3) String() string {
 		s.NumberOfDataPoints)
 }
 
-// String returns a human-readable description of Section4.
+// String returns a human-readable description of Section4, naming the
+// parameter as if it were in discipline 0 (meteorological products). Use
+// Describe with the message's Section0.Discipline for other disciplines.
 func (s Section4) String() string {
+	return s.Describe(0)
+}
+
+// Describe returns a human-readable description of Section4 with the
+// parameter named for the given discipline (Section0.Discipline).
+func (s Section4) Describe(discipline uint8) string {
 	desc := fmt.Sprintf("Section4{Template: %d (%s)",
 		s.TemplateNumber, ProductDefinitionTemplateName(s.TemplateNumber))
-	if tmpl, ok := s.Template.(Template40); ok {
+	f := Field{Section4: s}
+	if tmpl := f.extractTemplate40(); tmpl != nil {
 		desc += fmt.Sprintf(", Parameter: %s [%s]",
-			ParameterName(0, tmpl.ParameterCategory, tmpl.ParameterNumber),
-			ParameterUnit(0, tmpl.ParameterCategory, tmpl.ParameterNumber))
-		desc += fmt.Sprintf(", Surface: %s",
-			SurfaceTypeName(tmpl.TypeOfFirstFixedSurface))
-	}
-	if tmpl, ok := s.Template.(Template41); ok {
-		desc += fmt.Sprintf(", Parameter: %s [%s]",
-			ParameterName(0, tmpl.ParameterCategory, tmpl.ParameterNumber),
-			ParameterUnit(0, tmpl.ParameterCategory, tmpl.ParameterNumber))
+			ParameterName(discipline, tmpl.ParameterCategory, tmpl.ParameterNumber),
+			ParameterUnit(discipline, tmpl.ParameterCategory, tmpl.ParameterNumber))
 		desc += fmt.Sprintf(", Surface: %s",
 			SurfaceTypeName(tmpl.TypeOfFirstFixedSurface))
 	}
@@ -1139,4 +1141,41 @@ func (s Section5) String() string {
 	return fmt.Sprintf("Section5{Template: %d (%s), Values: %d}",
 		s.TemplateNumber, DataRepresentationTemplateName(s.TemplateNumber),
 		s.NumberOfValues)
+}
+
+// init fills the codes the tables above do not list from the WMO tables
+// generated into codetables_wmo.go; the hand-written names win.
+func init() {
+	fill8 := func(dst, src map[uint8]string) {
+		for k, v := range src {
+			if _, ok := dst[k]; !ok {
+				dst[k] = v
+			}
+		}
+	}
+	fill16 := func(dst, src map[uint16]string) {
+		for k, v := range src {
+			if _, ok := dst[k]; !ok {
+				dst[k] = v
+			}
+		}
+	}
+	fill32 := func(dst, src map[uint32]string) {
+		for k, v := range src {
+			if _, ok := dst[k]; !ok {
+				dst[k] = v
+			}
+		}
+	}
+	fill8(disciplineTable, wmoDisciplineTable)
+	fill8(referenceTimeTable, wmoReferenceTimeTable)
+	fill8(productionStatusTable, wmoProductionStatusTable)
+	fill8(dataTypeTable, wmoDataTypeTable)
+	fill8(surfaceTypeTable, wmoSurfaceTypeTable)
+	fill16(gridDefinitionTemplateTable, wmoGridDefinitionTemplateTable)
+	fill16(productDefinitionTemplateTable, wmoProductDefinitionTemplateTable)
+	fill16(dataRepresentationTemplateTable, wmoDataRepresentationTemplateTable)
+	fill16(parameterCategoryTable, wmoParameterCategoryTable)
+	fill32(parameterTable, wmoParameterTable)
+	fill32(parameterUnitTable, wmoParameterUnitTable)
 }

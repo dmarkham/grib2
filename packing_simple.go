@@ -30,12 +30,16 @@ func UnpackSimple(data []byte, tmpl Template50, numValues uint32) ([]float64, er
 	}
 
 	bpv := int(tmpl.BitsPerValue)
+	if bpv >= 64 {
+		// eccodes tests/grib_bpv_limit.cc: 64 bits or more is invalid.
+		return nil, fmt.Errorf("grib2: simple packing: invalid bits per value %d", bpv)
+	}
 
-	// Special case: 0 bits per value means constant field
+	// Special case: 0 bits per value means constant field. The value is the
+	// reference value itself, without the decimal scale factor, as eccodes
+	// (DataSimplePacking.cc) and g2clib decode it.
 	if bpv == 0 {
-		ref := float64(tmpl.ReferenceValue)
-		d := math.Pow(10, float64(-tmpl.DecimalScaleFactor))
-		val := ref * d
+		val := float64(tmpl.ReferenceValue)
 		values := make([]float64, numValues)
 		for i := range values {
 			values[i] = val
@@ -88,91 +92,51 @@ func UnpackSimple(data []byte, tmpl Template50, numValues uint32) ([]float64, er
 
 // PackSimple encodes data using Template 5.0 (simple packing).
 // Returns the packed data bytes and the Template50 with computed parameters.
+//
+// The reference value is the largest float32 not above the minimum, so
+// every value packs to a non-negative integer. Constant input is packed
+// with 0 bits per value, as eccodes does. Values must be finite and within
+// float32 range, and bitsPerValue below 64.
 func PackSimple(values []float64, bitsPerValue uint8) ([]byte, Template50, error) {
 	n := len(values)
 	if n == 0 {
 		return nil, Template50{BitsPerValue: bitsPerValue}, nil
 	}
-
-	// Find min and max
-	vmin, vmax := values[0], values[0]
-	for _, v := range values[1:] {
-		if v < vmin {
-			vmin = v
-		}
-		if v > vmax {
-			vmax = v
-		}
+	sc, err := chooseSimpleScale("simple packing", values, int(bitsPerValue), 63, false)
+	if err != nil {
+		return nil, Template50{}, err
 	}
-
-	// Reference value is the minimum
-	refValue := float32(vmin)
-	ref := float64(refValue)
-
-	// Decimal scale factor = 0 (simplest case)
-	decimalScale := int16(0)
-
-	// Calculate binary scale factor
-	// We need: max_X = (vmax - ref) * 2^(-E) fits in bitsPerValue bits
-	// max_X = 2^bpv - 1
-	// So: 2^(-E) = max_X / (vmax - ref)
-	//     -E = log2(max_X / (vmax - ref))
-	//      E = -log2(max_X / (vmax - ref))
-	bpv := int(bitsPerValue)
-	maxPackedVal := float64(uint64(1)<<bpv - 1)
-
-	var binaryScale int16
-	rng := vmax - ref
-	if rng == 0 || bpv == 0 {
-		// Constant field
-		binaryScale = 0
-	} else {
-		e := math.Log2(rng / maxPackedVal)
-		binaryScale = int16(math.Ceil(e))
-	}
-
 	tmpl := Template50{
-		ReferenceValue:            refValue,
-		BinaryScaleFactor:         binaryScale,
-		DecimalScaleFactor:        decimalScale,
+		ReferenceValue:            sc.ref,
+		BinaryScaleFactor:         sc.e,
 		BitsPerValue:              bitsPerValue,
 		TypeOfOriginalFieldValues: 0, // floating point
 	}
-
-	if bpv == 0 {
+	if sc.constant {
+		tmpl.BitsPerValue = 0
 		return nil, tmpl, nil
 	}
 
-	// Pack values
-	s := math.Pow(2, float64(-binaryScale)) // inverse of decode scale
-
-	totalBits := uint64(bpv) * uint64(n)
-	totalBytes := (totalBits + 7) / 8
-	packed := make([]byte, totalBytes)
-
+	bpv := int(bitsPerValue)
+	packed := make([]byte, (uint64(bpv)*uint64(n)+7)/8)
 	switch bpv {
 	case 8:
 		for i, v := range values {
-			x := uint8(math.Round((v - ref) * s))
-			packed[i] = x
+			packed[i] = uint8(sc.packed(v))
 		}
 	case 16:
 		for i, v := range values {
-			x := uint16(math.Round((v - ref) * s))
-			binary.BigEndian.PutUint16(packed[i*2:i*2+2], x)
+			binary.BigEndian.PutUint16(packed[i*2:i*2+2], uint16(sc.packed(v)))
 		}
 	case 32:
 		for i, v := range values {
-			x := uint32(math.Round((v - ref) * s))
-			binary.BigEndian.PutUint32(packed[i*4:i*4+4], x)
+			binary.BigEndian.PutUint32(packed[i*4:i*4+4], uint32(sc.packed(v)))
 		}
 	default:
 		for i, v := range values {
-			x := uint64(math.Round((v - ref) * s))
-			storeBits(packed, uint64(i)*uint64(bpv), bpv, x)
+			storeBits(packed, uint64(i)*uint64(bpv), bpv, sc.packed(v))
 		}
 	}
-
 	return packed, tmpl, nil
 }
 

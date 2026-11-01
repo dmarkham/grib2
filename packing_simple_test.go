@@ -16,6 +16,11 @@ import (
 func loadReferenceValues(t *testing.T, path string) []float64 {
 	t.Helper()
 	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		// testdata/reference/*.values are gitignored (made with grib_get_data);
+		// testdata/upstream/eccodes_reference.json covers the same fields.
+		t.Skipf("reference values not present: %v", err)
+	}
 	if err != nil {
 		t.Fatalf("open reference values: %v", err)
 	}

@@ -1,6 +1,7 @@
 package grib2
 
 import (
+	"io"
 	"math"
 	"os"
 	"testing"
@@ -201,8 +202,11 @@ func TestIntegration_GFSMultiField(t *testing.T) {
 	msgCount := 0
 	for {
 		msg, err := dec.Decode()
-		if err != nil {
+		if err == io.EOF {
 			break
+		}
+		if err != nil {
+			t.Fatalf("Decode: %v", err)
 		}
 		msgCount++
 		allFields = append(allFields, msg.Fields...)
@@ -530,8 +534,11 @@ func TestIntegration_RoundTrip(t *testing.T) {
 			var messages []*Message
 			for {
 				msg, err := dec.Decode()
-				if err != nil {
+				if err == io.EOF {
 					break
+				}
+				if err != nil {
+					t.Fatalf("Decode: %v", err)
 				}
 				messages = append(messages, msg)
 			}

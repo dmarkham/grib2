@@ -2,6 +2,7 @@ package grib2
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"testing"
 )
@@ -81,8 +82,11 @@ func TestReadMessage_MultiMessage(t *testing.T) {
 	var messages []*Message
 	for {
 		msg, err := dec.Decode()
-		if err != nil {
+		if err == io.EOF {
 			break
+		}
+		if err != nil {
+			t.Fatalf("Decode: %v", err)
 		}
 		messages = append(messages, msg)
 	}

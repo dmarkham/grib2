@@ -21,6 +21,8 @@
 // 2-clause BSD License. See LICENSE in the OpenJPEG source tree.
 package j2k
 
+import "fmt"
+
 // ---------------------------------------------------------------------------
 // Context-number constants (ISO 15444-1 Table D.2)
 // ---------------------------------------------------------------------------
@@ -34,10 +36,10 @@ const (
 
 	T1CtxnoZC  = 0
 	T1CtxnoSC  = T1CtxnoZC + t1NumCtxsZC   // 9
-	T1CtxnoMAG = T1CtxnoSC + t1NumCtxsSC    // 14
-	T1CtxnoAGG = T1CtxnoMAG + t1NumCtxsMAG  // 17
-	T1CtxnoUNI = T1CtxnoAGG + t1NumCtxsAGG  // 18
-	t1NumCtxs  = T1CtxnoUNI + t1NumCtxsUNI  // 19
+	T1CtxnoMAG = T1CtxnoSC + t1NumCtxsSC   // 14
+	T1CtxnoAGG = T1CtxnoMAG + t1NumCtxsMAG // 17
+	T1CtxnoUNI = T1CtxnoAGG + t1NumCtxsAGG // 18
+	t1NumCtxs  = T1CtxnoUNI + t1NumCtxsUNI // 19
 )
 
 // Pass type constants.
@@ -93,24 +95,24 @@ const (
 	t1Sigma16 uint32 = 1 << 16
 	t1Sigma17 uint32 = 1 << 17
 
-	t1Chi0   uint32 = 1 << 18
-	t1Chi0I         = 18
-	t1Chi1   uint32 = 1 << 19
-	t1Chi1I         = 19
-	t1Mu0    uint32 = 1 << 20
-	t1Pi0    uint32 = 1 << 21
-	t1Chi2   uint32 = 1 << 22
-	t1Chi2I         = 22
-	t1Mu1    uint32 = 1 << 23
-	t1Pi1    uint32 = 1 << 24
-	t1Chi3   uint32 = 1 << 25
-	t1Mu2    uint32 = 1 << 26
-	t1Pi2    uint32 = 1 << 27
-	t1Chi4   uint32 = 1 << 28
-	t1Mu3    uint32 = 1 << 29
-	t1Pi3    uint32 = 1 << 30
-	t1Chi5   uint32 = 1 << 31
-	t1Chi5I         = 31
+	t1Chi0  uint32 = 1 << 18
+	t1Chi0I        = 18
+	t1Chi1  uint32 = 1 << 19
+	t1Chi1I        = 19
+	t1Mu0   uint32 = 1 << 20
+	t1Pi0   uint32 = 1 << 21
+	t1Chi2  uint32 = 1 << 22
+	t1Chi2I        = 22
+	t1Mu1   uint32 = 1 << 23
+	t1Pi1   uint32 = 1 << 24
+	t1Chi3  uint32 = 1 << 25
+	t1Mu2   uint32 = 1 << 26
+	t1Pi2   uint32 = 1 << 27
+	t1Chi4  uint32 = 1 << 28
+	t1Mu3   uint32 = 1 << 29
+	t1Pi3   uint32 = 1 << 30
+	t1Chi5  uint32 = 1 << 31
+	t1Chi5I        = 31
 )
 
 // Convenience aliases used when referring to the "current" row within
@@ -646,7 +648,7 @@ func (t *T1) decSigpassMQC(bpno int32, cblksty uint32) {
 
 func (t *T1) decRefpassStepRaw(flagsp uint32, datapIdx int, poshalf int32, ci uint32) {
 	flags := t.flags[flagsp]
-	if (flags&((t1SigmaThis|t1PiThis)<<(ci*3))) == (t1SigmaThis << (ci * 3)) {
+	if (flags & ((t1SigmaThis | t1PiThis) << (ci * 3))) == (t1SigmaThis << (ci * 3)) {
 		v := t.mqc.RawDecode()
 		cur := t.data[datapIdx]
 		// v ^ (cur < 0)  -- if sign matches the decoded bit, add; otherwise subtract
@@ -701,7 +703,7 @@ func (t *T1) decRefpassRaw(bpno int32) {
 // decRefpassStepMQC processes one sample in the refinement pass using MQ.
 // Operates on a local flags copy and returns the updated flags.
 func (t *T1) decRefpassStepMQC(flags uint32, datapBase int, dataStride uint32, ci uint32, poshalf int32) uint32 {
-	if (flags&((t1SigmaThis|t1PiThis)<<(ci*3))) == (t1SigmaThis << (ci * 3)) {
+	if (flags & ((t1SigmaThis | t1PiThis) << (ci * 3))) == (t1SigmaThis << (ci * 3)) {
 		ctxt := getctxnoMAG(flags >> (ci * 3))
 		t.mqc.SetCurCtx(uint8(ctxt))
 		v := t.mqc.Decode()
@@ -724,7 +726,7 @@ func (t *T1) decRefpassStepMQC(flags uint32, datapBase int, dataStride uint32, c
 // decRefpassStepMQCSlow is for trailing rows.
 func (t *T1) decRefpassStepMQCSlow(flagsp uint32, datapIdx int, poshalf int32, ci uint32) {
 	flags := t.flags[flagsp]
-	if (flags&((t1SigmaThis|t1PiThis)<<(ci*3))) == (t1SigmaThis << (ci * 3)) {
+	if (flags & ((t1SigmaThis | t1PiThis) << (ci * 3))) == (t1SigmaThis << (ci * 3)) {
 		ctxt := getctxnoMAG(flags >> (ci * 3))
 		t.mqc.SetCurCtx(uint8(ctxt))
 		v := t.mqc.Decode()
@@ -975,8 +977,9 @@ func (t *T1) DecodeCodeblock(w, h, orient, roishift, cblksty, numbps uint32, seg
 
 	bpnoPlusOne := int32(roishift + numbps)
 	if bpnoPlusOne >= 31 {
-		// Unsupported -- matches openjpeg guard.
-		bpnoPlusOne = 30
+		// OpenJPEG rejects these too (opj_t1_decode_cblk): the sample
+		// buffer holds magnitude plus one fractional bit in an int32.
+		return nil, fmt.Errorf("%w: code-block with %d magnitude bit-planes (maximum 30)", ErrUnsupported, bpnoPlusOne)
 	}
 	passtype := uint32(2) // first pass of first bitplane is always cleanup
 
@@ -1212,7 +1215,7 @@ func (t *T1Encoder) encSigpass(bpno int32) {
 func (t *T1Encoder) encRefpassStep(flagsp uint32, ci uint32, datapIdx int, bpno int32) {
 	flags := t.flags[flagsp]
 
-	if (flags&((t1SigmaThis|t1PiThis)<<(ci*3))) != (t1SigmaThis << (ci * 3)) {
+	if (flags & ((t1SigmaThis | t1PiThis) << (ci * 3))) != (t1SigmaThis << (ci * 3)) {
 		return
 	}
 
@@ -1265,7 +1268,7 @@ func (t *T1Encoder) encClnpassStep(flagsp uint32, ci uint32, datapIdx int,
 
 	flags := t.flags[flagsp]
 
-	if (flags&((t1SigmaThis|t1PiThis)<<(ci*3))) != 0 {
+	if (flags & ((t1SigmaThis | t1PiThis) << (ci * 3))) != 0 {
 		return
 	}
 
@@ -1426,6 +1429,12 @@ func (t *T1Encoder) EncodeCodeblock(coeffs []int32, w, h, orient, numbps uint32)
 			actualBPS++
 			v >>= 1
 		}
+	}
+	// t.data holds 2*|v|, so its bit length is one more than the number of
+	// magnitude bit-planes of v. Coding starts at the top plane of v (as
+	// OpenJPEG does); starting one higher would only add an empty plane.
+	if actualBPS > 0 {
+		actualBPS--
 	}
 	if actualBPS > numbps {
 		actualBPS = numbps

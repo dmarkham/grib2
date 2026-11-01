@@ -876,7 +876,7 @@ func TestNearestValue_AllGridEdges_Template31(t *testing.T) {
 		// tolerance. The key assertions are: no panic, no error, and the
 		// result is at a grid boundary.
 		latDist := math.Abs(nearLat - c.lat)
-		lonDist := math.Abs(nearLon - c.lon)
+		lonDist := lonDiff(nearLon, c.lon)
 		if latDist > 45.0 || lonDist > 45.0 {
 			t.Errorf("%s: nearestPoint=(%f,%f) is unreasonably far from query=(%f,%f)",
 				c.name, nearLat, nearLon, c.lat, c.lon)

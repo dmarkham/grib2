@@ -537,43 +537,42 @@ func packComplexInternal(values []float64, wantedBitsPerValue uint8, orderOfSpat
 		wantedBits = 23
 	}
 
+	sc, err := chooseSimpleScale("complex packing", values, int(wantedBitsPerValue), 63, true)
+	if err != nil {
+		return nil, Template52{}, 0, err
+	}
+	if sc.allNaN {
+		// Every value missing: one group of width 0 whose 1-bit reference
+		// is all ones, which decodes as missing (eccodes
+		// tests/grib_complex_spatial_differencing.sh keeps such a field
+		// all missing).
+		tmpl := Template52{
+			Template50:                        Template50{BitsPerValue: 1},
+			GroupSplittingMethod:              1,
+			MissingValueManagement:            1,
+			NumberOfGroups:                    1,
+			LengthIncrementForGroupLengths:    1,
+			TrueLengthOfLastGroup:             uint32(n),
+			NumberOfBitsForScaledGroupLengths: 0,
+		}
+		if orderOfSpatialDiff == 0 {
+			return []byte{0x80}, tmpl, 0, nil
+		}
+		// Spatial differencing: one octet for each of the order first
+		// values and the overall minimum (all zero), then the reference.
+		data := make([]byte, int(orderOfSpatialDiff)+2)
+		data[len(data)-1] = 0x80
+		return data, tmpl, 1, nil
+	}
+
 	// Find min and max of defined values
 	hasUndef := 0
 	mn, mx := math.Inf(1), math.Inf(-1)
-	ndef := 0
 	for _, val := range values {
 		if !math.IsNaN(val) {
-			if val < mn {
-				mn = val
-			}
-			if val > mx {
-				mx = val
-			}
-			ndef++
+			mn = math.Min(mn, val)
+			mx = math.Max(mx, val)
 		}
-	}
-
-	if ndef == 0 {
-		// All NaN / missing: return a minimal constant-zero field
-		tmpl := Template52{
-			Template50: Template50{
-				ReferenceValue:            0,
-				BinaryScaleFactor:         0,
-				DecimalScaleFactor:        0,
-				BitsPerValue:              0,
-				TypeOfOriginalFieldValues: 0,
-			},
-			GroupSplittingMethod:              1,
-			MissingValueManagement:            0,
-			NumberOfGroups:                    0,
-			ReferenceForGroupWidths:           0,
-			NumberOfBitsForGroupWidths:        0,
-			ReferenceForGroupLengths:          0,
-			LengthIncrementForGroupLengths:    1,
-			TrueLengthOfLastGroup:             0,
-			NumberOfBitsForScaledGroupLengths: 0,
-		}
-		return nil, tmpl, 0, nil
 	}
 
 	// NaN values become missingIntSentinel in the integer array
@@ -585,8 +584,9 @@ func packComplexInternal(values []float64, wantedBitsPerValue uint8, orderOfSpat
 		}
 	}
 
-	// Compute scaling: ECMWF style
-	ref := mn
+	// Compute scaling: ECMWF style. The reference is stored as a float32,
+	// so scale from the stored value (never above the minimum).
+	ref := float64(sc.ref)
 	frange := mx - ref
 	var binaryScale int
 
@@ -710,6 +710,13 @@ func packComplexInternal(values []float64, wantedBitsPerValue uint8, orderOfSpat
 				}
 			}
 		}
+	}
+
+	// Without spatial differencing there is nowhere to store a bias, and
+	// the integers are already non-negative (the reference is at or below
+	// the minimum), so only differenced data are shifted.
+	if packingMode == 1 {
+		vmn = 0
 	}
 
 	// Subtract global minimum (bias) so all values are non-negative
@@ -1041,7 +1048,7 @@ func packComplexInternal(values []float64, wantedBitsPerValue uint8, orderOfSpat
 
 	tmpl := Template52{
 		Template50: Template50{
-			ReferenceValue:            float32(ref),
+			ReferenceValue:            sc.ref,
 			BinaryScaleFactor:         int16(binaryScale),
 			DecimalScaleFactor:        0,
 			BitsPerValue:              uint8(bitsPerValueActual),

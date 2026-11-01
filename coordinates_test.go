@@ -72,7 +72,9 @@ func TestGridCoordLatLon(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGridCoordLambert(t *testing.T) {
-	f := openTestField(t, "testdata/lambert.grib2")
+	// testdata/lambert.grib2 declares 496 points on a 349x277 grid, which
+	// TestGridCoordinates_InconsistentGrids rejects; use a consistent grid.
+	f := openTestField(t, "testdata/upstream/lambert_small.grib2")
 
 	lats, lons, err := f.GridCoordinates()
 	if err != nil {
@@ -163,7 +165,8 @@ func TestGridCoordMercator(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGridCoordPolarStereographic(t *testing.T) {
-	f := openTestField(t, "testdata/polar_stereographic.grib2")
+	// testdata/polar_stereographic.grib2 has Dx = Dy = 0; use the eccodes sample.
+	f := openTestField(t, "testdata/upstream/ps_sample.grib2")
 
 	lats, lons, err := f.GridCoordinates()
 	if err != nil {
@@ -272,11 +275,11 @@ func TestGridCoordGaussianReduced(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGridCoordSpaceView(t *testing.T) {
-	f := openTestField(t, "testdata/space_view.grib2")
+	// testdata/space_view.grib2 declares 496 points on a 5424x5424 grid,
+	// which is an error; use a consistent grid (eccodes
+	// tests/grib_grid_space_view.sh, scaled down).
+	f := openTestField(t, "testdata/upstream/space_view_small.grib2")
 
-	// This test file has NumberOfDataPoints=496 but Nx*Ny=5424*5424,
-	// meaning it is a truncated test file. We should still get coordinates
-	// for the declared number of data points without error.
 	lats, lons, err := f.GridCoordinates()
 	if err != nil {
 		t.Fatalf("GridCoordinates: %v", err)
@@ -349,7 +352,7 @@ func openTestField(t *testing.T, path string) Field {
 func eccodesGetData(t *testing.T, path string) ([]float64, []float64) {
 	t.Helper()
 	gribGetData := "/home/dmarkham/git/dmarkham/grib2/reference/eccodes-install/bin/grib_get_data"
-	if _, err := os.Stat(gribGetData); os.IsNotExist(err) {
+	if _, err := os.Stat(gribGetData); os.IsNotExist(err) || !eccodesAvailable(t) {
 		t.Skip("eccodes not available")
 		return nil, nil
 	}
