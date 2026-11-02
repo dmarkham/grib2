@@ -188,13 +188,13 @@ func ReadSection5(r io.Reader) (Section5, error) {
 			return Section5{}, fmt.Errorf("grib2: template 5.4 too short")
 		}
 		s.Template = Template54{Precision: templateBody[0]}
-	case 40:
+	case 40, 40000:
 		tmpl, err := readTemplate540(templateBody)
 		if err != nil {
 			return Section5{}, err
 		}
 		s.Template = tmpl
-	case 41:
+	case 41, 41000:
 		// PNG packing uses the same template as simple packing (5.0)
 		tmpl, err := readTemplate50(templateBody)
 		if err != nil {
@@ -410,7 +410,10 @@ func WriteSection5(w io.Writer, s Section5) error {
 		return fmt.Errorf("grib2: unsupported data rep template type %T", s.Template)
 	}
 
-	length := uint32(11 + len(templateBytes))
+	length, err := sectionLength(5, 11 + len(templateBytes))
+	if err != nil {
+		return err
+	}
 	buf := make([]byte, length)
 
 	binary.BigEndian.PutUint32(buf[0:4], length)
@@ -419,7 +422,7 @@ func WriteSection5(w io.Writer, s Section5) error {
 	binary.BigEndian.PutUint16(buf[9:11], s.TemplateNumber)
 	copy(buf[11:], templateBytes)
 
-	_, err := w.Write(buf)
+	_, err = w.Write(buf)
 	if err != nil {
 		return fmt.Errorf("grib2: writing section 5: %w", err)
 	}

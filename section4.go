@@ -248,7 +248,16 @@ func ReadSection4(r io.Reader) (Section4, error) {
 		TemplateNumber: readUint16(body, 2), // octets 8-9
 	}
 
-	templateBody := body[4:] // starts at octet 10
+	// The NV coordinate values (4 octets each) follow the template, so the
+	// template body ends 4*NV bytes before the end of the section.
+	pvLen := 4 * int(s.NV)
+	if len(body)-4 < pvLen {
+		return Section4{}, fmt.Errorf("grib2: section 4 too short for %d coordinate values: %d bytes", s.NV, len(body))
+	}
+	templateBody := body[4 : len(body)-pvLen] // starts at octet 10
+	if pvLen > 0 {
+		s.CoordinateValues = append([]byte(nil), body[len(body)-pvLen:]...)
+	}
 
 	switch s.TemplateNumber {
 	case 0:
@@ -310,7 +319,7 @@ func readTemplate40(body []byte) (Template40, error) {
 		HoursAfterCutoff:           readUint16(body, 5),  // octets 15-16
 		MinutesAfterCutoff:         body[7],              // octet 17
 		IndicatorOfUnitOfTimeRange: body[8],              // octet 18
-		ForecastTime:               readInt32(body, 9),   // octets 19-22
+		ForecastTime:               readSignMag32(body, 9), // octets 19-22 (sign-magnitude per WMO)
 		TypeOfFirstFixedSurface:    body[13],              // octet 23
 		ScaleFactorOfFirstSurface:  readSignMag8(body[14]), // octet 24 (sign-magnitude per WMO)
 		ScaledValueOfFirstSurface:  readUint32(body, 15), // octets 25-28
@@ -530,7 +539,10 @@ func WriteSection4(w io.Writer, s Section4) error {
 		return fmt.Errorf("grib2: unsupported product template type %T", s.Template)
 	}
 
-	length := uint32(9 + len(templateBytes) + len(s.CoordinateValues))
+	length, err := sectionLength(4, 9 + len(templateBytes) + len(s.CoordinateValues))
+	if err != nil {
+		return err
+	}
 	buf := make([]byte, length)
 
 	binary.BigEndian.PutUint32(buf[0:4], length)
@@ -542,7 +554,7 @@ func WriteSection4(w io.Writer, s Section4) error {
 		copy(buf[9+len(templateBytes):], s.CoordinateValues)
 	}
 
-	_, err := w.Write(buf)
+	_, err = w.Write(buf)
 	if err != nil {
 		return fmt.Errorf("grib2: writing section 4: %w", err)
 	}
@@ -559,7 +571,7 @@ func writeTemplate40(t Template40) []byte {
 	binary.BigEndian.PutUint16(buf[5:7], t.HoursAfterCutoff)
 	buf[7] = t.MinutesAfterCutoff
 	buf[8] = t.IndicatorOfUnitOfTimeRange
-	binary.BigEndian.PutUint32(buf[9:13], uint32(t.ForecastTime))
+	binary.BigEndian.PutUint32(buf[9:13], writeSignMag32(t.ForecastTime))
 	buf[13] = t.TypeOfFirstFixedSurface
 	buf[14] = writeSignMag8(t.ScaleFactorOfFirstSurface)
 	binary.BigEndian.PutUint32(buf[15:19], t.ScaledValueOfFirstSurface)

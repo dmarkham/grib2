@@ -581,7 +581,7 @@ func TestGridScanParams_Template390(t *testing.T) {
 // TestGridScanParams_Template390_Integration verifies that Values() on a
 // space_view.grib2 file correctly dispatches through gridScanParams for Template390.
 func TestGridScanParams_Template390_Integration(t *testing.T) {
-	raw, err := os.ReadFile("testdata/space_view.grib2")
+	raw, err := os.ReadFile("testdata/upstream/space_view_small.grib2")
 	if err != nil {
 		t.Skipf("read: %v", err)
 	}

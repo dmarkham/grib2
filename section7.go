@@ -36,14 +36,17 @@ func ReadSection7(r io.Reader) (Section7, error) {
 
 // WriteSection7 writes the Data Section.
 func WriteSection7(w io.Writer, s Section7) error {
-	length := uint32(5 + len(s.Data))
+	length, err := sectionLength(7, 5 + len(s.Data))
+	if err != nil {
+		return err
+	}
 	buf := make([]byte, length)
 
 	binary.BigEndian.PutUint32(buf[0:4], length)
 	buf[4] = 7
 	copy(buf[5:], s.Data)
 
-	_, err := w.Write(buf)
+	_, err = w.Write(buf)
 	if err != nil {
 		return fmt.Errorf("grib2: writing section 7: %w", err)
 	}

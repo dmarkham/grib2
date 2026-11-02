@@ -27,11 +27,10 @@ func UnpackPNG(data []byte, tmpl Template50, numValues uint32) ([]float64, error
 
 	bpv := int(tmpl.BitsPerValue)
 
-	// Constant field
-	if bpv == 0 || len(data) == 0 {
-		ref := float64(tmpl.ReferenceValue)
-		d := math.Pow(10, float64(-tmpl.DecimalScaleFactor))
-		val := ref * d
+	// Constant field: the reference value itself, without the decimal
+	// scale factor (eccodes DataPngPacking.cc).
+	if bpv == 0 {
+		val := float64(tmpl.ReferenceValue)
 		values := make([]float64, numValues)
 		for i := range values {
 			values[i] = val
@@ -53,53 +52,89 @@ func UnpackPNG(data []byte, tmpl Template50, numValues uint32) ([]float64, error
 	decimalS := math.Pow(10, float64(-tmpl.DecimalScaleFactor))
 	ref := float64(tmpl.ReferenceValue)
 
-	// Round bitsPerValue up to nearest byte boundary for extraction
-	bits8 := ((bpv + 7) / 8) * 8
-
-	values := make([]float64, 0, numValues)
-
-	for j := 0; j < height; j++ {
-		for k := 0; k < width; k++ {
-			if uint32(len(values)) >= numValues {
-				break
-			}
-			pixel := img.At(bounds.Min.X+k, bounds.Min.Y+j)
-			x := pixelToUint(pixel, bits8)
-			values = append(values, (float64(x)*binaryS+ref)*decimalS)
-		}
+	n := int(numValues)
+	if width*height < n {
+		return nil, fmt.Errorf("grib2: PNG packing: image is %dx%d, need %d values", width, height, n)
 	}
-
+	values := make([]float64, n)
+	if err := pngSamples(img, bpv, func(i int, x uint64) bool {
+		if i >= n {
+			return false
+		}
+		values[i] = (float64(x)*binaryS + ref) * decimalS
+		return true
+	}); err != nil {
+		return nil, err
+	}
 	return values, nil
 }
 
-// pixelToUint extracts the unsigned integer value from a pixel.
-// PNG in GRIB2 uses grayscale with 8 or 16 bits per channel.
-func pixelToUint(p color.Color, bits int) uint64 {
-	switch bits {
-	case 8:
-		// 8-bit grayscale
-		r, _, _, _ := p.RGBA()
-		return uint64(r >> 8)
-	case 16:
-		// 16-bit grayscale
-		r, _, _, _ := p.RGBA()
-		return uint64(r)
-	case 24:
-		// RGB: 3 channels of 8 bits each
-		r, g, b, _ := p.RGBA()
-		return (uint64(r>>8) << 16) | (uint64(g>>8) << 8) | uint64(b>>8)
-	case 32:
-		// RGBA: 4 channels of 8 bits each
-		r, g, b, a := p.RGBA()
-		return (uint64(r>>8) << 24) | (uint64(g>>8) << 16) | (uint64(b>>8) << 8) | uint64(a>>8)
-	default:
-		// Fall back to grayscale
-		r, _, _, _ := p.RGBA()
-		if bits >= 16 {
-			return uint64(r)
+// pngSamples calls put with each pixel's raw sample, row by row. Samples
+// are read from the decoded pixel bytes: going through color.Color would
+// premultiply RGBA pixels by their alpha byte, which in GRIB2 is the low
+// byte of a 32-bit sample (eccodes DataPngPacking.cc).
+func pngSamples(img image.Image, bpv int, put func(i int, x uint64) bool) error {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	depth := ((bpv + 7) / 8) * 8
+	i := 0
+	switch im := img.(type) {
+	case *image.Gray:
+		if depth != 8 {
+			return fmt.Errorf("grib2: PNG packing: 8-bit grayscale image for %d bits per value", bpv)
 		}
-		return uint64(r >> (16 - bits))
+		for y := 0; y < h; y++ {
+			for _, p := range im.Pix[y*im.Stride : y*im.Stride+w] {
+				if !put(i, uint64(p)) {
+					return nil
+				}
+				i++
+			}
+		}
+	case *image.Gray16:
+		if depth != 16 {
+			return fmt.Errorf("grib2: PNG packing: 16-bit grayscale image for %d bits per value", bpv)
+		}
+		for y := 0; y < h; y++ {
+			row := im.Pix[y*im.Stride : y*im.Stride+2*w]
+			for k := 0; k < w; k++ {
+				if !put(i, uint64(row[2*k])<<8|uint64(row[2*k+1])) {
+					return nil
+				}
+				i++
+			}
+		}
+	case *image.RGBA, *image.NRGBA:
+		// 24-bit samples are RGB (Go decodes them with an opaque alpha),
+		// 32-bit samples are RGBA.
+		var pix []byte
+		var stride int
+		if rgba, ok := im.(*image.RGBA); ok {
+			pix, stride = rgba.Pix, rgba.Stride
+		} else {
+			nrgba := im.(*image.NRGBA)
+			pix, stride = nrgba.Pix, nrgba.Stride
+		}
+		if depth != 24 && depth != 32 {
+			return fmt.Errorf("grib2: PNG packing: colour image for %d bits per value", bpv)
+		}
+		for y := 0; y < h; y++ {
+			for k := 0; k < w; k++ {
+				p := pix[y*stride+4*k : y*stride+4*k+4]
+				x := uint64(p[0])<<16 | uint64(p[1])<<8 | uint64(p[2])
+				if depth == 32 {
+					x = x<<8 | uint64(p[3])
+				}
+				if !put(i, x) {
+					return nil
+				}
+				i++
+			}
+		}
+	default:
+		return fmt.Errorf("grib2: PNG packing: unsupported image type %T for %d bits per value", img, bpv)
 	}
+	return nil
 }
 
 // PackPNG encodes data using Template 5.41 (PNG packing).
@@ -110,45 +145,24 @@ func PackPNG(values []float64, bitsPerValue uint8, width, height int) ([]byte, T
 		return nil, Template50{BitsPerValue: bitsPerValue}, nil
 	}
 
-	// Find min/max for scaling parameters
-	vmin, vmax := values[0], values[0]
-	for _, v := range values[1:] {
-		if v < vmin {
-			vmin = v
-		}
-		if v > vmax {
-			vmax = v
-		}
+	sc, err := chooseSimpleScale("PNG packing", values, int(bitsPerValue), 16, false)
+	if err != nil {
+		return nil, Template50{}, err
 	}
-
-	refValue := float32(vmin)
-	ref := float64(refValue)
-	decimalScale := int16(0)
-	bpv := int(bitsPerValue)
-	maxPackedVal := float64(uint64(1)<<bpv - 1)
-
-	var binaryScale int16
-	rng := vmax - ref
-	if rng == 0 || bpv == 0 {
-		binaryScale = 0
-	} else {
-		e := math.Log2(rng / maxPackedVal)
-		binaryScale = int16(math.Ceil(e))
+	if width <= 0 || height <= 0 || width*height < n {
+		return nil, Template50{}, fmt.Errorf("grib2: PNG packing: %dx%d image cannot hold %d values", width, height, n)
 	}
-
 	tmpl := Template50{
-		ReferenceValue:            refValue,
-		BinaryScaleFactor:         binaryScale,
-		DecimalScaleFactor:        decimalScale,
+		ReferenceValue:            sc.ref,
+		BinaryScaleFactor:         sc.e,
 		BitsPerValue:              bitsPerValue,
 		TypeOfOriginalFieldValues: 0,
 	}
-
-	if bpv == 0 {
+	if sc.constant {
+		tmpl.BitsPerValue = 0
 		return nil, tmpl, nil
 	}
-
-	invScale := math.Pow(2, float64(-binaryScale))
+	bpv := int(bitsPerValue)
 	bits8 := ((bpv + 7) / 8) * 8
 
 	// Create the PNG image
@@ -160,7 +174,7 @@ func PackPNG(values []float64, bitsPerValue uint8, width, height int) ([]byte, T
 		for j := 0; j < height; j++ {
 			for k := 0; k < width; k++ {
 				if idx < n {
-					x := uint8(math.Round((values[idx] - ref) * invScale))
+					x := uint8(sc.packed(values[idx]))
 					gray.SetGray(k, j, color.Gray{Y: x})
 					idx++
 				}
@@ -172,7 +186,7 @@ func PackPNG(values []float64, bitsPerValue uint8, width, height int) ([]byte, T
 		for j := 0; j < height; j++ {
 			for k := 0; k < width; k++ {
 				if idx < n {
-					x := uint16(math.Round((values[idx] - ref) * invScale))
+					x := uint16(sc.packed(values[idx]))
 					gray16.SetGray16(k, j, color.Gray16{Y: x})
 					idx++
 				}

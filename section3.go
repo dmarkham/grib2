@@ -336,7 +336,25 @@ func ReadSection3(r io.Reader) (Section3, error) {
 		}
 	}
 
+	// Any parsed template can be followed by the optional list of numbers of
+	// points (octets 11 and 12 describe it), e.g. the PL array of a reduced
+	// lat/lon grid (Template 3.0 with Ni missing). Template 3.40 reads its own.
+	if size, ok := fixedGridTemplateSizes[s.TemplateNumber]; ok && len(templateBody) > size {
+		s.OptionalPointNumbers = append([]byte(nil), templateBody[size:]...)
+	}
+
 	return s, nil
+}
+
+// fixedGridTemplateSizes is the template body size of each parsed grid
+// template other than 3.40.
+var fixedGridTemplateSizes = map[uint16]int{
+	0:  template30Size,
+	1:  template31Size,
+	10: template310Size,
+	20: template320Size,
+	30: template330Size,
+	90: template390Size,
 }
 
 // RawGridTemplate stores an unparsed grid definition template.
@@ -402,7 +420,10 @@ func WriteSection3(w io.Writer, s Section3) error {
 		return fmt.Errorf("grib2: unsupported grid template type %T", s.Template)
 	}
 
-	length := uint32(14 + len(templateBytes) + len(s.OptionalPointNumbers))
+	length, err := sectionLength(3, 14 + len(templateBytes) + len(s.OptionalPointNumbers))
+	if err != nil {
+		return err
+	}
 	buf := make([]byte, length)
 
 	binary.BigEndian.PutUint32(buf[0:4], length)
@@ -417,7 +438,7 @@ func WriteSection3(w io.Writer, s Section3) error {
 		copy(buf[14+len(templateBytes):], s.OptionalPointNumbers)
 	}
 
-	_, err := w.Write(buf)
+	_, err = w.Write(buf)
 	if err != nil {
 		return fmt.Errorf("grib2: writing section 3: %w", err)
 	}

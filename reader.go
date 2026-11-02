@@ -127,3 +127,15 @@ func readFloat32IEEE(b []byte, offset int) float32 {
 	bits := binary.BigEndian.Uint32(b[offset : offset+4])
 	return math.Float32frombits(bits)
 }
+
+// missingUint32 is the all-ones "missing" value of a 4-octet unsigned field.
+const missingUint32 = 0xFFFFFFFF
+
+// sectionLength checks that a section of n octets fits the 4-octet length
+// field every section starts with.
+func sectionLength(section, n int) (uint32, error) {
+	if n < 0 || uint64(n) > math.MaxUint32 {
+		return 0, fmt.Errorf("grib2: section %d would be %d octets, more than a 4-octet length can hold", section, n)
+	}
+	return uint32(n), nil
+}

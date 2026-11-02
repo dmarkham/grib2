@@ -4,44 +4,53 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"math/big"
 )
 
 // GridCoordinates returns the latitude and longitude (in degrees) of every
 // grid point in the field, in the same order as the data values returned
 // by Field.Values(). Returns slices of length NumberOfDataPoints.
+// Longitudes are in [0, 360).
 func (f *Field) GridCoordinates() (lats, lons []float64, err error) {
 	s3 := f.Section3
+	n := int(s3.NumberOfDataPoints)
 	switch tmpl := s3.Template.(type) {
 	case Template30:
-		lats, lons, err = gridCoordsLatLon(tmpl, s3.NumberOfDataPoints)
+		if tmpl.Ni == missingUint32 {
+			lats, lons, err = gridCoordsReducedLatLon(tmpl, s3)
+		} else {
+			lats, lons, err = gridCoordsRegular(tmpl)
+		}
 	case Template31:
-		lats, lons, err = gridCoordsRotatedLatLon(tmpl, s3.NumberOfDataPoints)
+		lats, lons, err = gridCoordsRotatedLatLon(tmpl)
 	case Template310:
-		lats, lons, err = gridCoordsMercator(tmpl, s3.NumberOfDataPoints)
+		lats, lons, err = gridCoordsMercator(tmpl)
 	case Template320:
-		lats, lons, err = gridCoordsPolarStereographic(tmpl, s3.NumberOfDataPoints)
+		lats, lons, err = gridCoordsPolarStereographic(tmpl)
 	case Template330:
-		lats, lons, err = gridCoordsLambert(tmpl, s3.NumberOfDataPoints)
+		lats, lons, err = gridCoordsLambert(tmpl)
 	case Template340:
-		lats, lons, err = gridCoordsGaussian(tmpl, s3.NumberOfDataPoints, s3.OptionalPointNumbers, s3.OctetsForNumberOfPoints)
+		if tmpl.Ni == missingUint32 {
+			lats, lons, err = gridCoordsReducedGaussian(tmpl, s3)
+		} else {
+			lats, lons, err = gridCoordsRegular(tmpl)
+		}
 	case Template390:
+		// The space view generator lists points in data order.
 		lats, lons, err = gridCoordsSpaceView(tmpl, s3.NumberOfDataPoints)
+		if err == nil && tmpl.ScanningMode != 0 {
+			lats = applyScanningMode(lats, tmpl.ScanningMode, int(tmpl.Nx), int(tmpl.Ny))
+			lons = applyScanningMode(lons, tmpl.ScanningMode, int(tmpl.Nx), int(tmpl.Ny))
+		}
 	default:
 		return nil, nil, fmt.Errorf("grib2: GridCoordinates not implemented for template %T", tmpl)
 	}
 	if err != nil {
 		return nil, nil, err
 	}
-
-	// Reorder coordinates to canonical order (matching Values()).
-	// The grid-specific functions produce coordinates in raw scanning order;
-	// Values() applies applyScanningMode to get canonical order. We must match.
-	scanMode, ni, nj := gridScanParams(s3.Template)
-	if scanMode != 0 && ni > 0 && nj > 0 {
-		lats = applyScanningMode(lats, scanMode, ni, nj)
-		lons = applyScanningMode(lons, scanMode, ni, nj)
+	if len(lats) != n {
+		return nil, nil, fmt.Errorf("grib2: grid has %d points, section 3 declares %d", len(lats), n)
 	}
-
 	return lats, lons, nil
 }
 
@@ -61,89 +70,64 @@ func scanFlags(mode uint8) (iNeg, jPos, jConsec bool) {
 	return
 }
 
-// ---------------------------------------------------------------------------
-// Template 3.0 -- Latitude/Longitude (equidistant cylindrical)
-// ---------------------------------------------------------------------------
-
-func gridCoordsLatLon(t Template30, nDataPoints uint32) ([]float64, []float64, error) {
-	ni := int(t.Ni)
-	nj := int(t.Nj)
-
-	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
-	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
-	lat2 := float64(t.LatitudeOfLastGridPoint) * 1e-6
-	lon2 := float64(t.LongitudeOfLastGridPoint) * 1e-6
-
-	iNeg, jPos, _ := scanFlags(t.ScanningMode)
-
-	// Compute di from first/last longitudes (more robust than the encoded value)
-	var di float64
-	if ni > 1 {
-		if iNeg {
-			if lon1 > lon2 {
-				di = (lon1 - lon2) / float64(ni-1)
-			} else {
-				di = (lon1 + 360.0 - lon2) / float64(ni-1)
-			}
-		} else {
-			if lon2 > lon1 {
-				di = (lon2 - lon1) / float64(ni-1)
-			} else {
-				di = (lon2 + 360.0 - lon1) / float64(ni-1)
-			}
-		}
+// projectedCanonical lays out a projected grid in canonical order. point
+// maps an offset (x, y) in metres from the first grid point to geographic
+// coordinates. The first grid point is the first point in data order, so
+// the i axis runs west (-x) when iScansNegatively and the j axis runs north
+// (+y) when jScansPositively. The order of consecutive points (0x20) and
+// alternating rows (0x10) only affect the data order, not where the points
+// are.
+func projectedCanonical(nx, ny int, dx, dy float64, scanMode uint8, point func(x, y float64) (lat, lon float64, err error)) ([]float64, []float64, error) {
+	if nx <= 0 || ny <= 0 || nx == missingUint32 || ny == missingUint32 {
+		return nil, nil, fmt.Errorf("grib2: invalid grid dimensions Nx=%d, Ny=%d", nx, ny)
 	}
+	if dx <= 0 || dy <= 0 {
+		return nil, nil, fmt.Errorf("grib2: invalid grid lengths Dx=%v, Dy=%v", dx, dy)
+	}
+	iNeg, jPos, _ := scanFlags(scanMode)
+	sx, sy := 1.0, -1.0
 	if iNeg {
-		di = -di
+		sx = -1
 	}
-
-	// Compute dj from first/last latitudes
-	var dj float64
-	if nj > 1 {
+	if jPos {
+		sy = 1
+	}
+	lats := make([]float64, nx*ny)
+	lons := make([]float64, nx*ny)
+	for j := 0; j < ny; j++ { // j and i count in scanning order
+		row := j
 		if jPos {
-			dj = (lat2 - lat1) / float64(nj-1)
-		} else {
-			dj = (lat1 - lat2) / float64(nj-1)
+			row = ny - 1 - j
+		}
+		for i := 0; i < nx; i++ {
+			col := i
+			if iNeg {
+				col = nx - 1 - i
+			}
+			lat, lon, err := point(sx*float64(i)*dx, sy*float64(j)*dy)
+			if err != nil {
+				return nil, nil, err
+			}
+			if math.IsNaN(lat) || math.IsNaN(lon) || math.IsInf(lat, 0) || math.IsInf(lon, 0) {
+				return nil, nil, fmt.Errorf("grib2: grid point (%d, %d) cannot be projected", i, j)
+			}
+			lats[row*nx+col] = lat
+			lons[row*nx+col] = coordNormaliseLon(lon)
 		}
 	}
-	// Ensure dj goes in the right direction: from lat1 toward lat2
-	if !jPos {
-		dj = -dj // north to south => decreasing latitude
-	}
+	return lats, lons, nil
+}
 
-	// Build 1-D lat/lon arrays
-	latRow := make([]float64, nj)
-	lonCol := make([]float64, ni)
-	for j := 0; j < nj; j++ {
-		latRow[j] = lat1 + float64(j)*dj
-	}
-	if nj > 0 {
-		latRow[nj-1] = lat2 // avoid rounding drift
-	}
-	for i := 0; i < ni; i++ {
-		lonCol[i] = lon1 + float64(i)*di
-	}
-	if ni > 0 {
-		lonCol[ni-1] = lon2 // avoid rounding drift
-	}
+// ---------------------------------------------------------------------------
+// Template 3.0 / 3.40 -- regular Latitude/Longitude and regular Gaussian
+// ---------------------------------------------------------------------------
 
-	n := int(nDataPoints)
-	lats := make([]float64, n)
-	lons := make([]float64, n)
-
-	for idx := 0; idx < n; idx++ {
-		j := idx / ni
-		i := idx % ni
-		if j >= nj {
-			j = nj - 1
-		}
-		if i >= ni {
-			i = ni - 1
-		}
-		lats[idx] = latRow[j]
-		lons[idx] = lonCol[i]
+func gridCoordsRegular(tmpl GridDefinitionTemplate) ([]float64, []float64, error) {
+	g, err := regularGridOf(tmpl)
+	if err != nil {
+		return nil, nil, err
 	}
-
+	lats, lons := g.coords()
 	return lats, lons, nil
 }
 
@@ -151,87 +135,27 @@ func gridCoordsLatLon(t Template30, nDataPoints uint32) ([]float64, []float64, e
 // Template 3.1 -- Rotated Latitude/Longitude
 // ---------------------------------------------------------------------------
 
-func gridCoordsRotatedLatLon(t Template31, nDataPoints uint32) ([]float64, []float64, error) {
-	ni := int(t.Ni)
-	nj := int(t.Nj)
+// rotation returns the southern pole and angle of rotation of a rotated
+// lat/lon grid in degrees. The angle of rotation is an IEEE float (octets
+// 81-84), not a scaled integer.
+func rotation(t Template31) (southPoleLat, southPoleLon, angle float64) {
+	u := angleUnit(t.BasicAngle, t.SubdivisionsOfBasicAngle)
+	return float64(t.LatitudeOfSouthernPole) * u, float64(t.LongitudeOfSouthernPole) * u,
+		float64(math.Float32frombits(t.AngleOfRotation))
+}
 
-	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
-	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
-	lat2 := float64(t.LatitudeOfLastGridPoint) * 1e-6
-	lon2 := float64(t.LongitudeOfLastGridPoint) * 1e-6
-
-	iNeg, jPos, _ := scanFlags(t.ScanningMode)
-
-	var di float64
-	if ni > 1 {
-		if iNeg {
-			if lon1 > lon2 {
-				di = (lon1 - lon2) / float64(ni-1)
-			} else {
-				di = (lon1 + 360.0 - lon2) / float64(ni-1)
-			}
-		} else {
-			if lon2 > lon1 {
-				di = (lon2 - lon1) / float64(ni-1)
-			} else {
-				di = (lon2 + 360.0 - lon1) / float64(ni-1)
-			}
-		}
+func gridCoordsRotatedLatLon(t Template31) ([]float64, []float64, error) {
+	g, err := regularGridOf(t)
+	if err != nil {
+		return nil, nil, err
 	}
-	if iNeg {
-		di = -di
+	rLats, rLons := g.coords()
+	spLat, spLon, angle := rotation(t)
+	for i := range rLats {
+		la, lo := coordUnrotate(rLats[i], rLons[i], angle, spLat, spLon)
+		rLats[i], rLons[i] = la, coordNormaliseLon(lo)
 	}
-
-	var dj float64
-	if nj > 1 {
-		if jPos {
-			dj = (lat2 - lat1) / float64(nj-1)
-		} else {
-			dj = (lat1 - lat2) / float64(nj-1)
-		}
-	}
-	if !jPos {
-		dj = -dj
-	}
-
-	latRow := make([]float64, nj)
-	lonCol := make([]float64, ni)
-	for j := 0; j < nj; j++ {
-		latRow[j] = lat1 + float64(j)*dj
-	}
-	if nj > 0 {
-		latRow[nj-1] = lat2
-	}
-	for i := 0; i < ni; i++ {
-		lonCol[i] = lon1 + float64(i)*di
-	}
-	if ni > 0 {
-		lonCol[ni-1] = lon2
-	}
-
-	southPoleLat := float64(t.LatitudeOfSouthernPole) * 1e-6
-	southPoleLon := float64(t.LongitudeOfSouthernPole) * 1e-6
-	angleOfRotation := float64(t.AngleOfRotation) * 1e-6
-
-	n := int(nDataPoints)
-	lats := make([]float64, n)
-	lons := make([]float64, n)
-
-	for idx := 0; idx < n; idx++ {
-		j := idx / ni
-		i := idx % ni
-		if j >= nj {
-			j = nj - 1
-		}
-		if i >= ni {
-			i = ni - 1
-		}
-		rlat, rlon := coordUnrotate(latRow[j], lonCol[i], angleOfRotation, southPoleLat, southPoleLon)
-		lats[idx] = rlat
-		lons[idx] = rlon
-	}
-
-	return lats, lons, nil
+	return rLats, rLons, nil
 }
 
 // coordRotate converts geographic (lat,lon) to rotated (lat,lon).
@@ -250,6 +174,10 @@ func coordRotate(lat, lon, angleOfRot, southPoleLat, southPoleLon float64) (floa
 	cosT := math.Cos(deg2rad * tAngle)
 	sinO := math.Sin(deg2rad * oAngle)
 	cosO := math.Cos(deg2rad * oAngle)
+
+	// Undo the final rotation by angleOfRot first: coordUnrotate subtracts
+	// it after rotating, so the inverse adds it before.
+	lon += angleOfRot
 
 	// Convert geographic to Cartesian.
 	latr := lat * deg2rad
@@ -281,8 +209,6 @@ func coordRotate(lat, lon, angleOfRot, southPoleLat, southPoleLon float64) (floa
 
 	retLat := math.Asin(zr) * rad2deg
 	retLon := math.Atan2(yr, xr) * rad2deg
-
-	retLon += angleOfRot
 
 	return retLat, retLon
 }
@@ -333,27 +259,22 @@ func coordUnrotate(inlat, inlon, angleOfRot, southPoleLat, southPoleLon float64)
 // Template 3.10 -- Mercator
 // ---------------------------------------------------------------------------
 
-func gridCoordsMercator(t Template310, nDataPoints uint32) ([]float64, []float64, error) {
-	ni := int(t.Ni)
-	nj := int(t.Nj)
-
+func gridCoordsMercator(t Template310) ([]float64, []float64, error) {
 	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
 	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
 	laD := float64(t.LaD) * 1e-6
+	orientRad := float64(t.OrientationOfTheGrid) * 1e-6 * math.Pi / 180.0
 
-	diMetres := float64(t.Di) * 1e-3
-	djMetres := float64(t.Dj) * 1e-3
-
-	orientDeg := float64(t.OrientationOfTheGrid) * 1e-6
-	orientRad := orientDeg * math.Pi / 180.0
-
-	radius := coordEarthRadius(t.ShapeOfEarth,
+	major, minor, err := earthAxes(t.ShapeOfEarth,
 		t.ScaleFactorOfRadiusOfSphericalEarth, t.ScaledValueOfRadiusOfSphericalEarth,
 		t.ScaleFactorOfEarthMajorAxis, t.ScaledValueOfEarthMajorAxis,
 		t.ScaleFactorOfEarthMinorAxis, t.ScaledValueOfEarthMinorAxis)
-	// For a spherical Earth, major == minor == radius
-	major := radius
-	minor := radius
+	if err != nil {
+		return nil, nil, err
+	}
+	if math.Abs(lat1) >= 90 || math.Abs(laD) >= 90 {
+		return nil, nil, fmt.Errorf("grib2: Mercator: latitudes must be within (-90, 90): lat1=%v LaD=%v", lat1, laD)
+	}
 
 	const deg2rad = math.Pi / 180.0
 	const rad2deg = 180.0 / math.Pi
@@ -367,59 +288,42 @@ func gridCoordsMercator(t Template310, nDataPoints uint32) ([]float64, []float64
 	e := math.Sqrt(es)
 	m1 := math.Cos(laDRad) / math.Sqrt(1.0-es*math.Sin(laDRad)*math.Sin(laDRad))
 
-	// Forward: initial point -> x0, y0
-	sinphi := math.Sin(latFirstRad)
-	ts := coordComputeT(e, latFirstRad, sinphi)
+	// Forward: first point -> x0, y0
+	ts := coordComputeT(e, latFirstRad, math.Sin(latFirstRad))
 	x0 := major * m1 * coordAdjustLonRadians(lonFirstRad-orientRad)
 	y0 := -major * m1 * math.Log(ts)
-	x0 = -x0
-	y0 = -y0
 
-	n := int(nDataPoints)
-	lats := make([]float64, n)
-	lons := make([]float64, n)
-
-	for j := 0; j < nj; j++ {
-		y := float64(j) * djMetres
-		for i := 0; i < ni; i++ {
-			idx := i + j*ni
-			if idx >= n {
-				break
-			}
-			x := float64(i) * diMetres
-			_x := x - x0
-			_y := y - y0
-			ts2 := math.Exp(-_y / (major * m1))
+	return projectedCanonical(int(t.Ni), int(t.Nj), float64(t.Di)*1e-3, float64(t.Dj)*1e-3, t.ScanningMode,
+		func(x, y float64) (float64, float64, error) {
+			ts2 := math.Exp(-(y + y0) / (major * m1))
 			latRad := coordComputePhi(e, ts2)
-			lonRad := coordAdjustLonRadians(orientRad + _x/(major*m1))
-			lats[idx] = latRad * rad2deg
-			lons[idx] = coordNormaliseLon(lonRad * rad2deg)
-		}
-	}
-
-	return lats, lons, nil
+			lonRad := coordAdjustLonRadians(orientRad + (x+x0)/(major*m1))
+			return latRad * rad2deg, lonRad * rad2deg, nil
+		})
 }
 
 // ---------------------------------------------------------------------------
 // Template 3.20 -- Polar Stereographic
 // ---------------------------------------------------------------------------
 
-func gridCoordsPolarStereographic(t Template320, nDataPoints uint32) ([]float64, []float64, error) {
-	nx := int(t.Nx)
-	ny := int(t.Ny)
-
+func gridCoordsPolarStereographic(t Template320) ([]float64, []float64, error) {
 	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
 	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
 	laD := float64(t.LaD) * 1e-6
 	orient := float64(t.OrientationOfTheGrid) * 1e-6
 
-	dxMetres := float64(t.Dx) * 1e-3
-	dyMetres := float64(t.Dy) * 1e-3
-
-	radius := coordEarthRadius(t.ShapeOfEarth,
+	major, minor, err := earthAxes(t.ShapeOfEarth,
 		t.ScaleFactorOfRadiusOfSphericalEarth, t.ScaledValueOfRadiusOfSphericalEarth,
 		t.ScaleFactorOfEarthMajorAxis, t.ScaledValueOfEarthMajorAxis,
 		t.ScaleFactorOfEarthMinorAxis, t.ScaledValueOfEarthMinorAxis)
+	if err != nil {
+		return nil, nil, err
+	}
+	if major != minor {
+		// eccodes refuses this too (tests/grib_grid_polar_stereographic.sh).
+		return nil, nil, fmt.Errorf("grib2: polar stereographic on an oblate Earth (shape %d) is not supported", t.ShapeOfEarth)
+	}
+	radius := major
 
 	const deg2rad = math.Pi / 180.0
 	const rad2deg = 180.0 / math.Pi
@@ -427,327 +331,264 @@ func gridCoordsPolarStereographic(t Template320, nDataPoints uint32) ([]float64,
 	const epsilon = 1.0e-10
 
 	centralLon := orient * deg2rad
+	// The projection centre flag (bit 1) says which pole is in the plane.
+	southPole := t.ProjectionCentreFlag&0x80 != 0
 	centralLat := laD * deg2rad
-	lonFirst := lon1 * deg2rad
-	latFirst := lat1 * deg2rad
-
-	// Forward projection initialisation
-	var sign float64 = 1.0
-	if centralLat < 0 {
+	sign := 1.0
+	if southPole {
 		sign = -1.0
+		if centralLat > 0 {
+			centralLat = -centralLat
+		}
 	}
-	var fwdInd int
-	var fwdMcs, fwdTcs float64
-	if math.Abs(math.Abs(centralLat)-piOver2) > epsilon {
-		fwdInd = 1
-		con1 := sign * centralLat
-		fwdMcs = math.Cos(con1)
-		fwdTcs = math.Tan(0.5 * (piOver2 - con1))
+
+	var mcs, tcs float64
+	trueScale := math.Abs(math.Abs(centralLat)-piOver2) > epsilon
+	if trueScale {
+		con := sign * centralLat
+		mcs = math.Cos(con)
+		tcs = math.Tan(0.5 * (piOver2 - con))
+	}
+	height := func(ts float64) float64 {
+		if trueScale {
+			return radius * mcs * ts / tcs
+		}
+		return 2.0 * radius * ts
 	}
 
 	// Forward: first point -> x0, y0
-	con1 := sign * (lonFirst - centralLon)
-	ts := math.Tan(0.5 * (piOver2 - sign*latFirst))
-	var height float64
-	if fwdInd != 0 {
-		height = radius * fwdMcs * ts / fwdTcs
-	} else {
-		height = 2.0 * radius * ts
-	}
-	x0 := sign * height * math.Sin(con1)
-	y0 := -sign * height * math.Cos(con1)
-	x0 = -x0
-	y0 = -y0
+	con1 := sign * (lon1*deg2rad - centralLon)
+	h := height(math.Tan(0.5 * (piOver2 - sign*lat1*deg2rad)))
+	x0 := sign * h * math.Sin(con1)
+	y0 := -sign * h * math.Cos(con1)
 
-	// Inverse projection initialisation
-	var invInd int
-	var invMcs, invTcs float64
-	if math.Abs(math.Abs(centralLat)-piOver2) > epsilon {
-		invInd = 1
-		con1 = sign * centralLat
-		invMcs = math.Cos(con1)
-		invTcs = math.Tan(0.5 * (piOver2 - con1))
-	}
-
-	n := int(nDataPoints)
-	lats := make([]float64, n)
-	lons := make([]float64, n)
-
-	y := 0.0
-	for j := 0; j < ny; j++ {
-		x := 0.0
-		for i := 0; i < nx; i++ {
-			idx := i + j*nx
-			if idx >= n {
-				break
-			}
-			_x := (x - x0) * sign
-			_y := (y - y0) * sign
-			rh := math.Sqrt(_x*_x + _y*_y)
-			if invInd != 0 {
-				ts = rh * invTcs / (radius * invMcs)
+	return projectedCanonical(int(t.Nx), int(t.Ny), float64(t.Dx)*1e-3, float64(t.Dy)*1e-3, t.ScanningMode,
+		func(x, y float64) (float64, float64, error) {
+			px := (x + x0) * sign
+			py := (y + y0) * sign
+			rh := math.Hypot(px, py)
+			var ts float64
+			if trueScale {
+				ts = rh * tcs / (radius * mcs)
 			} else {
 				ts = rh / (radius * 2.0)
 			}
 			lat := sign * (piOver2 - 2*math.Atan(ts))
-			var lon float64
-			if rh == 0 {
-				lon = sign * centralLon
-			} else {
-				lon = sign*math.Atan2(_x, -_y) + centralLon
+			lon := sign * centralLon
+			if rh != 0 {
+				lon = sign*math.Atan2(px, -py) + centralLon
 			}
-			lats[idx] = lat * rad2deg
-			lonDeg := lon * rad2deg
-			for lonDeg < 0 {
-				lonDeg += 360
-			}
-			for lonDeg > 360 {
-				lonDeg -= 360
-			}
-			lons[idx] = lonDeg
-
-			x += dxMetres
-		}
-		y += dyMetres
-	}
-
-	return lats, lons, nil
+			return lat * rad2deg, lon * rad2deg, nil
+		})
 }
 
 // ---------------------------------------------------------------------------
-// Template 3.30 -- Lambert Conformal Conic (spherical)
+// Template 3.30 -- Lambert Conformal Conic (sphere or oblate spheroid)
 // ---------------------------------------------------------------------------
 
-func gridCoordsLambert(t Template330, nDataPoints uint32) ([]float64, []float64, error) {
-	nx := int(t.Nx)
-	ny := int(t.Ny)
+func gridCoordsLambert(t Template330) ([]float64, []float64, error) {
+	const deg2rad = math.Pi / 180.0
+	const rad2deg = 180.0 / math.Pi
+	const epsilon = 1e-10
 
-	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
-	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
-	loV := float64(t.LoV) * 1e-6
-	laD := float64(t.LaD) * 1e-6
-	latin1 := float64(t.Latin1) * 1e-6
-	latin2 := float64(t.Latin2) * 1e-6
+	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6 * deg2rad
+	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6 * deg2rad
+	loV := float64(t.LoV) * 1e-6 * deg2rad
+	laD := float64(t.LaD) * 1e-6 * deg2rad
+	latin1 := float64(t.Latin1) * 1e-6 * deg2rad
+	latin2 := float64(t.Latin2) * 1e-6 * deg2rad
 
-	dxMetres := float64(t.Dx) * 1e-3
-	dyMetres := float64(t.Dy) * 1e-3
+	if math.Abs(latin1+latin2) < epsilon {
+		// eccodes: standard parallels cannot be equal and on opposite sides of the equator.
+		return nil, nil, fmt.Errorf("grib2: Lambert: standard parallels %v and %v are on opposite sides of the equator",
+			latin1*rad2deg, latin2*rad2deg)
+	}
 
-	radius := coordEarthRadius(t.ShapeOfEarth,
+	major, minor, err := earthAxes(t.ShapeOfEarth,
 		t.ScaleFactorOfRadiusOfSphericalEarth, t.ScaledValueOfRadiusOfSphericalEarth,
 		t.ScaleFactorOfEarthMajorAxis, t.ScaledValueOfEarthMajorAxis,
 		t.ScaleFactorOfEarthMinorAxis, t.ScaledValueOfEarthMinorAxis)
-
-	const deg2rad = math.Pi / 180.0
-
-	latFirstRad := lat1 * deg2rad
-	lonFirstRad := lon1 * deg2rad
-	loVRad := loV * deg2rad
-	latin1Rad := latin1 * deg2rad
-	latin2Rad := latin2 * deg2rad
-	laDRad := laD * deg2rad
-
-	// Compute cone constant n
-	var n float64
-	if math.Abs(latin1Rad-latin2Rad) < 1e-9 {
-		n = math.Sin(latin1Rad)
-	} else {
-		n = math.Log(math.Cos(latin1Rad)/math.Cos(latin2Rad)) /
-			math.Log(math.Tan(math.Pi/4+latin2Rad/2)/math.Tan(math.Pi/4+latin1Rad/2))
-	}
-
-	f := (math.Cos(latin1Rad) * math.Pow(math.Tan(math.Pi/4+latin1Rad/2), n)) / n
-	rho0Bare := f * math.Pow(math.Tan(math.Pi/4+laDRad/2), -n)
-
-	rho := radius * f * math.Pow(math.Tan(math.Pi/4+latFirstRad/2), -n)
-	rho0 := radius * rho0Bare
-
-	lonDiff := lonFirstRad - loVRad
-	if lonDiff > math.Pi {
-		lonDiff -= 2 * math.Pi
-	}
-	if lonDiff < -math.Pi {
-		lonDiff += 2 * math.Pi
-	}
-	angle := n * lonDiff
-	x0 := rho * math.Sin(angle)
-	y0 := rho0 - rho*math.Cos(angle)
-
-	nn := int(nDataPoints)
-	lats := make([]float64, nn)
-	lons := make([]float64, nn)
-
-	for j := 0; j < ny; j++ {
-		yy := y0 + float64(j)*dyMetres
-		for i := 0; i < nx; i++ {
-			idx := i + j*nx
-			if idx >= nn {
-				break
-			}
-			xx := x0 + float64(i)*dxMetres
-			latDeg, lonDeg := coordLambertXY2LatLon(radius, n, f, rho0Bare, loVRad, xx, yy)
-			lons[idx] = coordNormaliseLon(lonDeg)
-			lats[idx] = latDeg
-		}
-	}
-
-	return lats, lons, nil
-}
-
-// coordLambertXY2LatLon converts projection (x,y) to (lat,lon) degrees
-// for the spherical Lambert conformal conic projection.
-// Based on eccodes xy2lonlat.
-func coordLambertXY2LatLon(radius, n, f, rho0Bare, loVRad, x, y float64) (latDeg, lonDeg float64) {
-	const rad2deg = 180.0 / math.Pi
-	x /= radius
-	y /= radius
-	y = rho0Bare - y
-	rho := math.Hypot(x, y)
-	if rho != 0 {
-		if n < 0 {
-			rho = -rho
-			x = -x
-			y = -y
-		}
-		latRad := 2*math.Atan(math.Pow(f/rho, 1.0/n)) - math.Pi/2
-		lonRad := math.Atan2(x, y) / n
-		lonDeg = (lonRad + loVRad) * rad2deg
-		latDeg = latRad * rad2deg
-	} else {
-		lonDeg = 0.0
-		if n > 0 {
-			latDeg = 90.0
-		} else {
-			latDeg = -90.0
-		}
-	}
-	return
-}
-
-// ---------------------------------------------------------------------------
-// Template 3.40 -- Gaussian Latitude/Longitude
-// ---------------------------------------------------------------------------
-
-func gridCoordsGaussian(t Template340, nDataPoints uint32, optPL []byte, octetsPerPL uint8) ([]float64, []float64, error) {
-	nj := int(t.Nj)
-	N := int(t.N)
-
-	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
-	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
-	lon2 := float64(t.LongitudeOfLastGridPoint) * 1e-6
-
-	iNeg, jPos, _ := scanFlags(t.ScanningMode)
-
-	// Compute full Gaussian latitudes (2*N values, descending from north to south)
-	gaussLats, err := coordGaussianLatitudes(N)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Find the starting index matching lat1
-	istart := coordGaussianSearch(gaussLats, lat1)
-	if istart < 0 {
-		return nil, nil, fmt.Errorf("grib2: gaussian latitude %.6f not found in N=%d grid", lat1, N)
+	// Snyder's ellipsoidal formulas (eccodes LambertConformal::init_oblate);
+	// with e = 0 they reduce exactly to the spherical projection.
+	e := 0.0
+	if major != minor {
+		e = math.Sqrt(1 - (minor/major)*(minor/major))
 	}
+	mOf := func(phi float64) float64 {
+		s := math.Sin(phi)
+		return math.Cos(phi) / math.Sqrt(1-e*e*s*s)
+	}
+	tOf := func(phi float64) float64 { return coordComputeT(e, phi, math.Sin(phi)) }
 
-	// Extract nj latitudes starting from istart
-	size := len(gaussLats)
-	latRow := make([]float64, nj)
-	if jPos {
-		for j := 0; j < nj; j++ {
-			idx := istart - j
-			if idx < 0 {
-				idx += size
-			}
-			latRow[j] = gaussLats[idx]
-		}
+	var ns float64
+	if math.Abs(latin1-latin2) > epsilon {
+		ns = math.Log(mOf(latin1)/mOf(latin2)) / math.Log(tOf(latin1)/tOf(latin2))
 	} else {
-		for j := 0; j < nj; j++ {
-			idx := istart + j
-			if idx >= size {
-				idx -= size
+		ns = math.Sin(latin1)
+	}
+	F := mOf(latin1) / (ns * math.Pow(tOf(latin1), ns))
+	rh := major * F * math.Pow(tOf(laD), ns)
+
+	var rh1 float64
+	if math.Abs(math.Abs(lat1)-math.Pi/2) > epsilon {
+		rh1 = major * F * math.Pow(tOf(lat1), ns)
+	} else if lat1*ns <= 0 {
+		return nil, nil, fmt.Errorf("grib2: Lambert: first grid point cannot be projected")
+	}
+	theta := ns * coordAdjustLonRadians(lon1-loV)
+	x0 := rh1 * math.Sin(theta)
+	y0 := rh - rh1*math.Cos(theta)
+
+	return projectedCanonical(int(t.Nx), int(t.Ny), float64(t.Dx)*1e-3, float64(t.Dy)*1e-3, t.ScanningMode,
+		func(x, y float64) (float64, float64, error) {
+			px := x + x0
+			py := rh - (y + y0)
+			r := math.Hypot(px, py)
+			con := 1.0
+			if ns <= 0 {
+				r, con = -r, -1
 			}
-			latRow[j] = gaussLats[idx]
-		}
-	}
-
-	// Check if this is a reduced Gaussian grid
-	isReduced := t.Ni == 0xFFFFFFFF && len(optPL) > 0
-
-	if isReduced {
-		return gridCoordsReducedGaussian(latRow, nj, nDataPoints, optPL, octetsPerPL)
-	}
-
-	// Regular Gaussian grid
-	ni := int(t.Ni)
-
-	var di float64
-	if ni > 1 {
-		if iNeg {
-			if lon1 > lon2 {
-				di = (lon1 - lon2) / float64(ni-1)
-			} else {
-				di = (lon1 + 360.0 - lon2) / float64(ni-1)
+			th := 0.0
+			if r != 0 {
+				th = math.Atan2(con*px, con*py)
 			}
-		} else {
-			if lon2 > lon1 {
-				di = (lon2 - lon1) / float64(ni-1)
-			} else {
-				di = (lon2 + 360.0 - lon1) / float64(ni-1)
+			lat := -math.Pi / 2
+			if r != 0 || ns > 0 {
+				lat = coordComputePhi(e, math.Pow(r/(major*F), 1/ns))
 			}
-		}
-	}
-	if iNeg {
-		di = -di
-	}
-
-	lonCol := make([]float64, ni)
-	for i := 0; i < ni; i++ {
-		lonCol[i] = lon1 + float64(i)*di
-	}
-	if ni > 0 {
-		lonCol[ni-1] = lon2
-	}
-
-	n := int(nDataPoints)
-	lats := make([]float64, n)
-	lons := make([]float64, n)
-
-	for idx := 0; idx < n; idx++ {
-		j := idx / ni
-		i := idx % ni
-		if j >= nj {
-			j = nj - 1
-		}
-		if i >= ni {
-			i = ni - 1
-		}
-		lats[idx] = latRow[j]
-		lons[idx] = lonCol[i]
-	}
-
-	return lats, lons, nil
+			return lat * rad2deg, coordAdjustLonRadians(th/ns+loV) * rad2deg, nil
+		})
 }
 
-func gridCoordsReducedGaussian(latRow []float64, nj int, nDataPoints uint32, optPL []byte, octetsPerPL uint8) ([]float64, []float64, error) {
-	pl := coordDecodePL(optPL, octetsPerPL, nj)
+// ---------------------------------------------------------------------------
+// Reduced grids: Template 3.0 with Ni missing, Template 3.40 with a PL list
+// ---------------------------------------------------------------------------
 
-	n := int(nDataPoints)
-	lats := make([]float64, n)
-	lons := make([]float64, n)
+// reducedPL decodes and checks the PL list of a reduced grid.
+func reducedPL(s3 Section3, nj int) ([]int, error) {
+	if len(s3.OptionalPointNumbers) == 0 || s3.OctetsForNumberOfPoints == 0 {
+		return nil, fmt.Errorf("grib2: reduced grid (Ni missing) has no list of points per row")
+	}
+	pl := coordDecodePL(s3.OptionalPointNumbers, s3.OctetsForNumberOfPoints, nj)
+	if len(pl) != nj {
+		return nil, fmt.Errorf("grib2: reduced grid has %d PL entries, Nj is %d", len(pl), nj)
+	}
+	return pl, nil
+}
 
-	idx := 0
-	for j := 0; j < nj && j < len(pl); j++ {
-		rowCount := pl[j]
-		for i := 0; i < rowCount; i++ {
-			if idx >= n {
-				break
-			}
-			lons[idx] = float64(i) * 360.0 / float64(rowCount)
-			lats[idx] = latRow[j]
-			idx++
-		}
+func gridCoordsReducedGaussian(t Template340, s3 Section3) ([]float64, []float64, error) {
+	nj := int(t.Nj)
+	if nj <= 0 || t.Nj == missingUint32 {
+		return nil, nil, fmt.Errorf("grib2: invalid reduced Gaussian Nj=%d", t.Nj)
+	}
+	if _, jPos, _ := scanFlags(t.ScanningMode); jPos || t.ScanningMode&0x80 != 0 {
+		return nil, nil, fmt.Errorf("grib2: scanning mode 0x%02x on a reduced Gaussian grid is not supported", t.ScanningMode)
+	}
+	pl, err := reducedPL(s3, nj)
+	if err != nil {
+		return nil, nil, err
+	}
+	u := angleUnit(t.BasicAngle, t.SubdivisionsOfBasicAngle)
+	lat1 := float64(t.LatitudeOfFirstGridPoint) * u
+	lat2 := float64(t.LatitudeOfLastGridPoint) * u
+	all, err := coordGaussianLatitudes(int(t.N))
+	if err != nil {
+		return nil, nil, err
+	}
+	start := coordGaussianSearch(all, lat1)
+	if start < 0 || start+nj > len(all) {
+		return nil, nil, fmt.Errorf("grib2: latitude %v is not a Gaussian latitude of N=%d", lat1, t.N)
+	}
+	rowLats := all[start : start+nj]
+
+	lonFirst := ratAngle(t.LongitudeOfFirstGridPoint, t.BasicAngle, t.SubdivisionsOfBasicAngle)
+	lonLast := ratAngle(t.LongitudeOfLastGridPoint, t.BasicAngle, t.SubdivisionsOfBasicAngle)
+	for lonFirst.Sign() < 0 {
+		lonFirst.Add(lonFirst, big.NewRat(360, 1))
+	}
+	for lonLast.Sign() < 0 {
+		lonLast.Add(lonLast, big.NewRat(360, 1))
 	}
 
+	// eccodes is_gaussian_global (geo/grib_geography.cc).
+	maxPL := 0
+	for _, p := range pl {
+		maxPL = max(maxPL, p)
+	}
+	d := math.Abs(all[0] - all[1])
+	delta := 360.0 / float64(maxPL)
+	ll, _ := lonLast.Float64()
+	global := math.Abs(lat1-all[0]) < d && math.Abs(lat2+all[0]) < d &&
+		lonFirst.Sign() == 0 && math.Abs(ll-(360-delta))-delta <= u
+
+	lats, lons, err := reducedCoords(rowLats, pl, global, lonFirst, lonLast, int(s3.NumberOfDataPoints))
+	if err != nil && global {
+		// eccodes retries a "global" grid as a sub-area when the counts disagree.
+		lats, lons, err = reducedCoords(rowLats, pl, false, lonFirst, lonLast, int(s3.NumberOfDataPoints))
+	}
+	return lats, lons, err
+}
+
+// gridCoordsReducedLatLon lays out a reduced lat/lon grid (Template 3.0 with
+// Ni missing): rows equally spaced in latitude, each with pl[j] points
+// equally spaced between the first and last longitude (eccodes
+// geo/iterator/LatlonReduced.cc).
+func gridCoordsReducedLatLon(t Template30, s3 Section3) ([]float64, []float64, error) {
+	nj := int(t.Nj)
+	if nj <= 0 || t.Nj == missingUint32 {
+		return nil, nil, fmt.Errorf("grib2: invalid reduced lat/lon Nj=%d", t.Nj)
+	}
+	if t.ScanningMode != 0 {
+		return nil, nil, fmt.Errorf("grib2: scanning mode 0x%02x on a reduced lat/lon grid is not supported", t.ScanningMode)
+	}
+	pl, err := reducedPL(s3, nj)
+	if err != nil {
+		return nil, nil, err
+	}
+	u := angleUnit(t.BasicAngle, t.SubdivisionsOfBasicAngle)
+	lat1 := float64(t.LatitudeOfFirstGridPoint) * u
+	lat2 := float64(t.LatitudeOfLastGridPoint) * u
+	lon1 := float64(t.LongitudeOfFirstGridPoint) * u
+	lon2 := float64(t.LongitudeOfLastGridPoint) * u
+	if lat1 < lat2 {
+		return nil, nil, fmt.Errorf("grib2: reduced lat/lon: first latitude %v south of last %v with scanning mode 0", lat1, lat2)
+	}
+	rows, _ := evenRows(nj)(lat1, lat2)
+
+	maxPL := 0
+	for _, p := range pl {
+		maxPL = max(maxPL, p)
+	}
+	if maxPL == 0 {
+		return nil, nil, fmt.Errorf("grib2: reduced lat/lon grid has no points")
+	}
+	// eccodes geo/iterator/LatlonReduced.cc: a row within two steps of 360
+	// degrees is global; otherwise its pl[j] points run from the first to
+	// the last longitude inclusive.
+	dlon, local := 0.0, 1
+	switch {
+	case 360-math.Abs(lon2-lon1) < 2*360/float64(maxPL):
+		dlon, local = 360, 0
+	case lon2 < lon1:
+		dlon = lon2 + 360 - lon1
+	default:
+		dlon = lon2 - lon1
+	}
+
+	n := int(s3.NumberOfDataPoints)
+	lats := make([]float64, 0, n)
+	lons := make([]float64, 0, n)
+	for j, p := range pl {
+		step := dlon / float64(max(p-local, 1)) // rows may have no points
+		for i := 0; i < p; i++ {
+			lats = append(lats, rows[j])
+			lons = append(lons, coordNormaliseLon(lon1+float64(i)*step))
+		}
+	}
 	return lats, lons, nil
 }
 
@@ -772,15 +613,27 @@ func gridCoordsSpaceView(t Template390, nDataPoints uint32) ([]float64, []float6
 
 	iNeg, jPos, _ := scanFlags(t.ScanningMode)
 
-	radius := coordEarthRadius(t.ShapeOfEarth,
+	major, minor, err := earthAxes(t.ShapeOfEarth,
 		t.ScaleFactorOfRadiusOfSphericalEarth, t.ScaledValueOfRadiusOfSphericalEarth,
 		t.ScaleFactorOfEarthMajorAxis, t.ScaledValueOfEarthMajorAxis,
 		t.ScaleFactorOfEarthMinorAxis, t.ScaledValueOfEarthMinorAxis)
-	rEq := radius * 0.001  // metres to km
-	rPol := radius * 0.001 // spherical: same as rEq
+	if err != nil {
+		return nil, nil, err
+	}
+	rEq := major * 0.001  // metres to km
+	rPol := minor * 0.001 // equals rEq on a sphere
 
-	if nrInRadiusOfEarth == 0 {
-		return nil, nil, fmt.Errorf("grib2: space view Nr must be > 0")
+	if t.Nr == missingUint32 {
+		return nil, nil, fmt.Errorf("grib2: space view with Nr missing (orthographic view) is not supported")
+	}
+	if nrInRadiusOfEarth <= 1 {
+		return nil, nil, fmt.Errorf("grib2: space view Nr must be greater than one Earth radius")
+	}
+	if t.LatitudeOfSubSatellitePoint != 0 {
+		return nil, nil, fmt.Errorf("grib2: space view with sub-satellite latitude %v is not supported", float64(t.LatitudeOfSubSatellitePoint)*1e-6)
+	}
+	if nx <= 0 || ny <= 0 || int(nDataPoints) != nx*ny {
+		return nil, nil, fmt.Errorf("grib2: space view grid is %dx%d but section 3 declares %d points", nx, ny, nDataPoints)
 	}
 
 	angularSize := 2.0 * math.Asin(1.0/nrInRadiusOfEarth)
@@ -870,36 +723,6 @@ func gridCoordsSpaceView(t Template390, nDataPoints uint32) ([]float64, []float6
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
-
-// coordEarthRadius returns the Earth radius in metres for the given
-// ShapeOfEarth code (GRIB2 Table 3.2).
-func coordEarthRadius(shape uint8, scaleFacRadius uint8, scaledRadius uint32,
-	scaleFacMajor uint8, scaledMajor uint32,
-	scaleFacMinor uint8, scaledMinor uint32) float64 {
-	switch shape {
-	case 0:
-		return 6367470.0
-	case 1:
-		r := float64(scaledRadius)
-		if scaleFacRadius > 0 {
-			r /= math.Pow(10, float64(scaleFacRadius))
-		}
-		return r
-	case 6:
-		return 6371229.0
-	case 8:
-		return 6371200.0
-	default:
-		if scaledMajor > 0 {
-			r := float64(scaledMajor)
-			if scaleFacMajor > 0 {
-				r /= math.Pow(10, float64(scaleFacMajor))
-			}
-			return r
-		}
-		return 6371229.0
-	}
-}
 
 // coordComputeT computes the Snyder small t parameter.
 func coordComputeT(eccent, phi, sinphi float64) float64 {

@@ -13,22 +13,39 @@ import (
 //     values into a full grid with NaN for missing positions
 //  3. Apply scanning mode reordering (if Section 3 Template 3.0 ScanningMode != 0)
 func (f *Field) Values() ([]float64, error) {
-	values, err := f.unpackRaw()
+	bitmap, hasBitmap, err := f.Section6.bitmapApplies()
 	if err != nil {
 		return nil, err
 	}
 
-	// Apply bitmap if present
-	if f.Section6.HasBitmap() {
-		values, err = applyBitmap(values, f.Section6.Bitmap, f.Section3.NumberOfDataPoints)
+	values, err := f.unpackRaw()
+	if err != nil {
+		return nil, err
+	}
+	if len(values) != int(f.Section5.NumberOfValues) {
+		return nil, fmt.Errorf("grib2: unpacked %d values, section 5 declares %d", len(values), f.Section5.NumberOfValues)
+	}
+
+	nPoints := f.Section3.NumberOfDataPoints
+	if hasBitmap {
+		values, err = applyBitmap(values, bitmap, nPoints)
 		if err != nil {
 			return nil, fmt.Errorf("grib2: applying bitmap: %w", err)
 		}
+	} else if uint32(len(values)) != nPoints {
+		return nil, fmt.Errorf("grib2: %d values but section 3 declares %d data points and there is no bitmap", len(values), nPoints)
 	}
 
 	// Apply scanning mode reordering if needed
 	scanMode, ni, nj := gridScanParams(f.Section3.Template)
-	if scanMode != 0 {
+	reduced := ni == missingUint32 || nj == missingUint32
+	if ni > 0 && nj > 0 && !reduced && ni*nj != len(values) {
+		return nil, fmt.Errorf("grib2: grid is %dx%d but there are %d values", ni, nj, len(values))
+	}
+	if scanMode != 0 && ni > 0 && nj > 0 {
+		if reduced {
+			return nil, fmt.Errorf("grib2: scanning mode 0x%02x on a reduced grid is not supported", scanMode)
+		}
 		values = applyScanningMode(values, scanMode, ni, nj)
 	}
 
@@ -68,14 +85,14 @@ func (f *Field) unpackRaw() ([]float64, error) {
 		}
 		return UnpackIEEE(f.Section7.Data, tmpl, f.Section5.NumberOfValues)
 
-	case 40: // JPEG2000
+	case 40, 40000: // JPEG2000 (40000 is the legacy number of 5.40)
 		tmpl, ok := f.Section5.Template.(Template540)
 		if !ok {
 			return nil, fmt.Errorf("grib2: template 5.40: expected Template540, got %T", f.Section5.Template)
 		}
 		return UnpackJPEG2000(f.Section7.Data, tmpl, f.Section5.NumberOfValues)
 
-	case 41: // PNG
+	case 41, 41000: // PNG (41000 is the legacy number of 5.41)
 		tmpl, ok := f.Section5.Template.(Template50)
 		if !ok {
 			return nil, fmt.Errorf("grib2: template 5.41: expected Template50, got %T", f.Section5.Template)
@@ -108,22 +125,14 @@ func (f *Field) unpackRaw() ([]float64, error) {
 // a full grid array of size totalPoints, inserting NaN where the bitmap
 // bit is 0.
 func applyBitmap(packedValues []float64, bitmap []byte, totalPoints uint32) ([]float64, error) {
+	if need := (int(totalPoints) + 7) / 8; len(bitmap) < need {
+		return nil, fmt.Errorf("bitmap has %d bytes, need %d for %d grid points", len(bitmap), need, totalPoints)
+	}
 	expanded := make([]float64, totalPoints)
 	valueIdx := 0
 
 	for i := uint32(0); i < totalPoints; i++ {
-		byteIdx := i / 8
-		bitIdx := 7 - (i % 8) // MSB first
-
-		if byteIdx >= uint32(len(bitmap)) {
-			// Bitmap too short; fill remaining with NaN
-			for j := i; j < totalPoints; j++ {
-				expanded[j] = math.NaN()
-			}
-			break
-		}
-
-		if bitmap[byteIdx]&(1<<bitIdx) != 0 {
+		if bitmap[i/8]&(1<<(7-i%8)) != 0 { // MSB first
 			// Bit is set: value exists
 			if valueIdx >= len(packedValues) {
 				return nil, fmt.Errorf("bitmap expects more values than packed data contains (%d values exhausted at grid point %d)", len(packedValues), i)
@@ -134,6 +143,9 @@ func applyBitmap(packedValues []float64, bitmap []byte, totalPoints uint32) ([]f
 			// Bit is clear: missing value
 			expanded[i] = math.NaN()
 		}
+	}
+	if valueIdx != len(packedValues) {
+		return nil, fmt.Errorf("bitmap marks %d points present but %d values are packed", valueIdx, len(packedValues))
 	}
 
 	return expanded, nil

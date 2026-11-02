@@ -119,25 +119,27 @@ type Sampler struct {
 
 // NewSampler builds a Sampler for the grid that f is defined on.
 func NewSampler(f *Field) (*Sampler, error) {
-	switch tmpl := f.Section3.Template.(type) {
-	case Template30:
-		return &Sampler{grid: tmpl, weights: func(lat, lon float64) (BilinearWeights, error) {
-			return bilinearWeightsLatLon(tmpl, lat, lon)
-		}}, nil
-	case Template31:
-		return &Sampler{grid: tmpl, weights: func(lat, lon float64) (BilinearWeights, error) {
-			return bilinearWeightsRotatedLatLon(tmpl, lat, lon)
-		}}, nil
-	case Template340:
-		if tmpl.Ni == 0xFFFFFFFF {
-			return nil, fmt.Errorf("grib2: NewSampler: reduced Gaussian grids are not supported")
-		}
-		return &Sampler{grid: tmpl, weights: func(lat, lon float64) (BilinearWeights, error) {
-			return bilinearWeightsRegularGaussian(tmpl, lat, lon)
-		}}, nil
-	default:
-		return nil, fmt.Errorf("grib2: NewSampler: bilinear interpolation not supported for template %T", tmpl)
+	w, err := bilinearWeights(f.Section3.Template)
+	if err != nil {
+		return nil, fmt.Errorf("grib2: NewSampler: %w", err)
 	}
+	if ni, nj, ok := gridDims(f.Section3.Template); ok && ni*nj != int(f.Section3.NumberOfDataPoints) {
+		return nil, fmt.Errorf("grib2: NewSampler: grid is %dx%d but section 3 declares %d points", ni, nj, f.Section3.NumberOfDataPoints)
+	}
+	return &Sampler{grid: f.Section3.Template, weights: w}, nil
+}
+
+// gridDims returns Ni and Nj of a regular grid template.
+func gridDims(tmpl GridDefinitionTemplate) (ni, nj int, ok bool) {
+	switch t := tmpl.(type) {
+	case Template30:
+		return int(t.Ni), int(t.Nj), true
+	case Template31:
+		return int(t.Ni), int(t.Nj), true
+	case Template340:
+		return int(t.Ni), int(t.Nj), true
+	}
+	return 0, 0, false
 }
 
 // Weights locates (lat, lon) in degrees on the sampler's grid.

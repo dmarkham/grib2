@@ -11,9 +11,10 @@ import (
 // For isobaric surfaces (typeOfFirstFixedSurface == 100), the result is in Pa.
 // Use SurfaceLevelHPa for a convenience wrapper that returns hPa.
 //
-// Some producers (notably CMC/RDPS) use non-standard scale factors. When the
-// scale factor appears to be missing or produces an unreasonable result, this
-// function falls back to treating the scaled value as the raw level value.
+// The scale factor is sign-magnitude (CMC/RDPS write 0x84 for -4). A
+// missing scale factor (0xFF, MissingScaleFactor) means the scaled value is
+// used unscaled, as eccodes does. A missing scaled value gives NaN, where
+// eccodes' integer "level" key reports 0.
 func (f *Field) SurfaceLevel() (float64, error) {
 	tmpl := f.extractTemplate40()
 	if tmpl == nil {
@@ -47,6 +48,10 @@ func (f *Field) SurfaceType() (uint8, error) {
 	return tmpl.TypeOfFirstFixedSurface, nil
 }
 
+// MissingScaleFactor is the value a one-octet sign-magnitude scale factor
+// takes when its octet is all ones (0xFF), which GRIB2 uses to mean "missing".
+const MissingScaleFactor int8 = -127
+
 // computeSurfaceValue applies the GRIB2 scaling formula:
 //
 //	value = scaledValue * 10^(-scaleFactor)
@@ -55,11 +60,23 @@ func (f *Field) SurfaceType() (uint8, error) {
 // values like byte 0x84 are correctly interpreted as -4, not -124.
 // This means the standard formula works for all known producers
 // (GFS, ECMWF, CMC/RDPS, etc.) without any special-case hacks.
+//
+// A missing scale factor (octet 0xFF) means the scaled value is used as is,
+// as eccodes does. A missing scaled value gives NaN.
 func computeSurfaceValue(scaleFactor int8, scaledValue uint32) float64 {
-	if scaledValue == 0xFFFFFFFF {
+	if scaledValue == missingUint32 {
 		return math.NaN()
 	}
-	return float64(scaledValue) * math.Pow(10, float64(-scaleFactor))
+	v := float64(scaledValue)
+	switch {
+	case scaleFactor == MissingScaleFactor || scaleFactor == 0:
+		return v
+	case scaleFactor > 0:
+		// Divide by an exact power of ten so 24 with factor 1 gives exactly 2.4.
+		return v / math.Pow10(int(scaleFactor))
+	default:
+		return v * math.Pow10(int(-scaleFactor))
+	}
 }
 
 // extractTemplate40 gets the base Template40 from any product template.

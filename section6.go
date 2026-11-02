@@ -19,11 +19,35 @@ type Section6 struct {
 	Length    uint32
 	Indicator uint8
 	Bitmap    []byte // raw bitmap bytes (if indicator == 0)
+
+	// PreviousBitmap is the bitmap that indicator 254 refers to: the last
+	// bitmap defined earlier in the same message. The Decoder fills it in; it
+	// is not written by WriteSection6.
+	PreviousBitmap []byte
 }
 
 // HasBitmap returns true if this section contains an actual bitmap.
 func (s *Section6) HasBitmap() bool {
 	return s.Indicator == 0
+}
+
+// bitmapApplies reports whether a bitmap applies to the field and returns it.
+// Indicator 254 resolves to PreviousBitmap; indicators 1-253 (bitmaps
+// predefined by the originating centre) are not supported.
+func (s *Section6) bitmapApplies() ([]byte, bool, error) {
+	switch {
+	case s.Indicator == 255:
+		return nil, false, nil
+	case s.Indicator == 0:
+		return s.Bitmap, true, nil
+	case s.Indicator == 254:
+		if s.PreviousBitmap == nil {
+			return nil, false, fmt.Errorf("grib2: bit-map indicator 254 but no bitmap was defined earlier in the message")
+		}
+		return s.PreviousBitmap, true, nil
+	default:
+		return nil, false, fmt.Errorf("grib2: predefined bitmap (indicator %d) is not supported", s.Indicator)
+	}
 }
 
 // ReadSection6 reads the Bit-Map Section.
@@ -54,7 +78,10 @@ func ReadSection6(r io.Reader) (Section6, error) {
 
 // WriteSection6 writes the Bit-Map Section.
 func WriteSection6(w io.Writer, s Section6) error {
-	length := uint32(6 + len(s.Bitmap))
+	length, err := sectionLength(6, 6 + len(s.Bitmap))
+	if err != nil {
+		return err
+	}
 	buf := make([]byte, length)
 
 	binary.BigEndian.PutUint32(buf[0:4], length)
@@ -64,7 +91,7 @@ func WriteSection6(w io.Writer, s Section6) error {
 		copy(buf[6:], s.Bitmap)
 	}
 
-	_, err := w.Write(buf)
+	_, err = w.Write(buf)
 	if err != nil {
 		return fmt.Errorf("grib2: writing section 6: %w", err)
 	}

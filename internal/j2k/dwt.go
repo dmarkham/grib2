@@ -42,73 +42,56 @@ func InverseDWT53(coeffs []int32, width, height, numResolutions int) error {
 	if len(coeffs) < width*height {
 		return errShortCoeffs
 	}
-
-	// Compute the (x0,y0)-(x1,y1) rectangle for each resolution level.
-	// In the simple whole-tile case every resolution starts at (0,0) and
-	// the dimensions are derived by the standard JPEG 2000 ceil formulae:
-	//   resW[r] = ceil_div_pow2(width, numRes-1-r)
-	//   resH[r] = ceil_div_pow2(height, numRes-1-r)
-	type rect struct{ x0, y0, x1, y1 int }
-	nRes := numResolutions
-	res := make([]rect, nRes)
-	for r := 0; r < nRes; r++ {
-		shift := nRes - 1 - r
-		res[r] = rect{
-			x0: 0,
-			y0: 0,
-			x1: ceilDivPow2(width, shift),
-			y1: ceilDivPow2(height, shift),
-		}
+	// Whole-image case: every resolution starts at the origin and the
+	// dimensions follow the standard ceil formulae.
+	rects := make([]dwtRect, numResolutions)
+	for r := range rects {
+		shift := numResolutions - 1 - r
+		rects[r] = dwtRect{x1: ceilDivPow2(width, shift), y1: ceilDivPow2(height, shift)}
 	}
+	return inverseDWT53Rects(coeffs, width, rects)
+}
 
-	// Allocate a scratch buffer large enough for the longest row or column
-	// we will ever encounter.
+// dwtRect is the extent of one resolution level of a tile-component in
+// its own coordinate system (ISO 15444-1 eq. B-14).
+type dwtRect struct{ x0, y0, x1, y1 int }
+
+// inverseDWT53Rects is the general inverse 5/3 transform of one
+// tile-component (port of OpenJPEG opj_dwt_decode_tile). rects[r] gives
+// resolution r's bounds; their parity (x0%2, y0%2) selects the lifting
+// phase, which matters for tiles and images whose origin is not 0.
+// stride is the width of the highest resolution.
+func inverseDWT53Rects(coeffs []int32, stride int, rects []dwtRect) error {
+	nRes := len(rects)
+	if nRes <= 1 {
+		return nil
+	}
+	top := rects[nRes-1]
+	if top.x1-top.x0 != stride || len(coeffs) < stride*(top.y1-top.y0) {
+		return errShortCoeffs
+	}
 	maxDim := 0
 	for r := 1; r < nRes; r++ {
-		if w := res[r].x1 - res[r].x0; w > maxDim {
-			maxDim = w
-		}
-		if h := res[r].y1 - res[r].y0; h > maxDim {
-			maxDim = h
-		}
+		maxDim = imax(maxDim, imax(rects[r].x1-rects[r].x0, rects[r].y1-rects[r].y0))
 	}
 	tmp := make([]int32, maxDim)
 
-	// The full tile-component buffer stride (number of int32 values per row).
-	// This is always the width of the highest resolution.
-	stride := res[nRes-1].x1 - res[nRes-1].x0
-
-	// Starting dimensions (lowest resolution, level 0).
-	rw := res[0].x1 - res[0].x0
-	rh := res[0].y1 - res[0].y0
-
-	// Iterate from the second-lowest resolution (level 1) up to the highest.
+	rw := rects[0].x1 - rects[0].x0
+	rh := rects[0].y1 - rects[0].y0
 	for r := 1; r < nRes; r++ {
-		tr := res[r]
+		tr := rects[r]
 		newRW := tr.x1 - tr.x0
 		newRH := tr.y1 - tr.y0
 
-		// -- Horizontal pass: for each row of the new resolution ------
-		hSN := rw                // number of low-pass coefficients (previous width)
-		hDN := newRW - hSN       // number of high-pass coefficients
-		hCas := tr.x0 & 1        // parity of left edge
-
+		hSN, hDN, hCas := rw, newRW-rw, tr.x0&1
 		for j := 0; j < newRH; j++ {
-			row := coeffs[j*stride:]
-			idwt53H(tmp, row, hSN, hDN, hCas)
+			idwt53H(tmp, coeffs[j*stride:], hSN, hDN, hCas)
 		}
-
-		// -- Vertical pass: for each column of the new resolution -----
-		vSN := rh                // number of low-pass coefficients (previous height)
-		vDN := newRH - vSN       // number of high-pass coefficients
-		vCas := tr.y0 & 1        // parity of top edge
-
+		vSN, vDN, vCas := rh, newRH-rh, tr.y0&1
 		for j := 0; j < newRW; j++ {
 			idwt53V(tmp, coeffs, j, stride, vSN, vDN, vCas)
 		}
-
-		rw = newRW
-		rh = newRH
+		rw, rh = newRW, newRH
 	}
 	return nil
 }
@@ -325,8 +308,8 @@ func idwt53VCas0(tmp []int32, buf []int32, col, stride, sn, length int) {
 
 // idwt53VCas1 — vertical cas==1, length > 2.
 func idwt53VCas1(tmp []int32, buf []int32, col, stride, sn, length int) {
-	evenOff := sn * stride + col // even (low-frequency) samples start at row sn
-	oddOff := col                // odd (high-frequency) samples start at row 0
+	evenOff := sn*stride + col // even (low-frequency) samples start at row sn
+	oddOff := col              // odd (high-frequency) samples start at row 0
 
 	s1 := buf[evenOff+stride]
 	dc := buf[oddOff] - ((buf[evenOff] + s1 + 2) >> 2)
@@ -380,6 +363,14 @@ func idwt53VCas1(tmp []int32, buf []int32, col, stride, sn, length int) {
 //     of 1 means no transform is applied. The number of decomposition
 //     levels is numResolutions - 1.
 func ForwardDWT53(coeffs []int32, width, height, numResolutions int) error {
+	return forwardDWT53(coeffs, width, height, numResolutions)
+}
+
+// dwtInt is the coefficient type of the forward transform. The encoder
+// uses int64 so that the lifting steps cannot overflow at high precision.
+type dwtInt interface{ ~int32 | ~int64 }
+
+func forwardDWT53[T dwtInt](coeffs []T, width, height, numResolutions int) error {
 	if numResolutions <= 1 || width == 0 || height == 0 {
 		return nil
 	}
@@ -413,7 +404,7 @@ func ForwardDWT53(coeffs []int32, width, height, numResolutions int) error {
 			maxDim = dims[r].h
 		}
 	}
-	tmp := make([]int32, maxDim)
+	tmp := make([]T, maxDim)
 
 	// Forward DWT works from the highest resolution downward (the
 	// reverse of the inverse). For each level l (from numDecomp-1 down
@@ -449,17 +440,17 @@ func ForwardDWT53(coeffs []int32, width, height, numResolutions int) error {
 // fwdDWT53H performs the forward horizontal 5/3 wavelet transform of one row.
 // On entry the row holds spatial samples. On exit, row[0:sn] holds low-pass
 // and row[sn:sn+dn] holds high-pass coefficients.
-func fwdDWT53H(tmp []int32, row []int32, sn, dn, length int) {
+func fwdDWT53H[T dwtInt](tmp []T, row []T, sn, dn, length int) {
 	if length < 2 {
 		return
 	}
 
 	// Convenience accessors for the interleaved view.
-	S := func(i int) int32 { return row[i*2] }
-	D := func(i int) int32 { return row[1+i*2] }
+	S := func(i int) T { return row[i*2] }
+	D := func(i int) T { return row[1+i*2] }
 
 	// Clamped accessors for boundary extension.
-	Sc := func(i int) int32 {
+	Sc := func(i int) T {
 		if i < 0 {
 			return row[0]
 		}
@@ -505,7 +496,7 @@ func fwdDWT53H(tmp []int32, row []int32, sn, dn, length int) {
 
 // fwdDWT53V performs the forward vertical 5/3 wavelet transform for a
 // single column within a 2-D buffer.
-func fwdDWT53V(tmp []int32, buf []int32, col, stride, sn, dn, length int) {
+func fwdDWT53V[T dwtInt](tmp []T, buf []T, col, stride, sn, dn, length int) {
 	if length < 2 {
 		return
 	}
@@ -513,9 +504,9 @@ func fwdDWT53V(tmp []int32, buf []int32, col, stride, sn, dn, length int) {
 	// Read column into tmp as interleaved: even indices are S, odd are D.
 	// buf[0*stride+col] = sample 0, buf[1*stride+col] = sample 1, etc.
 
-	S := func(i int) int32 { return buf[i*2*stride+col] }
-	D := func(i int) int32 { return buf[(1+i*2)*stride+col] }
-	Sc := func(i int) int32 {
+	S := func(i int) T { return buf[i*2*stride+col] }
+	D := func(i int) T { return buf[(1+i*2)*stride+col] }
+	Sc := func(i int) T {
 		if i < 0 {
 			return buf[col]
 		}

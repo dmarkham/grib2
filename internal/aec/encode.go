@@ -13,7 +13,17 @@ import (
 )
 
 const (
-	rosEncoder = 5 // Remainder Of Segment marker for zero block encoding
+	// rosEncoder marks a zero-block run that is coded as "Remainder Of
+	// Segment". It must not collide with a real run length: libaec uses -1
+	// (encode.h). A value of 5 made every run of exactly five zero blocks
+	// come out as ROS, which the decoder expands to the end of the segment.
+	rosEncoder = -1
+
+	// maxEncoderRSI is libaec's upper limit on the reference sample interval.
+	maxEncoderRSI = 4096
+	// maxNotEnforcedBlockSize is libaec's upper limit on the block size when
+	// NotEnforce is set.
+	maxNotEnforcedBlockSize = 256
 )
 
 // encoder holds all internal state for encoding a single AEC stream.
@@ -25,16 +35,15 @@ type encoder struct {
 	flags         uint32
 
 	// Derived
-	idLen          int
-	xmin           uint32
-	xmax           uint32
-	pp             bool // preprocessor enabled
-	rsiSize        int  // rsi * blockSize
-	kmax           int
-	uncompLen     uint32 // uncompressed block length in bits
-	ref            int    // 1 if first block in RSI, 0 otherwise
-	refSample      uint32
-	encodedBlkSize int
+	idLen     int
+	xmin      uint32
+	xmax      uint32
+	pp        bool // preprocessor enabled
+	rsiSize   int  // rsi * blockSize
+	kmax      int
+	uncompLen uint32 // uncompressed block length in bits
+	ref       int    // 1 if the current block carries the reference sample
+	refSample uint32
 
 	// Current splitting position (persists between blocks for fast search)
 	k int
@@ -51,8 +60,7 @@ type encoder struct {
 
 	// Output bit accumulator
 	out  []byte
-	acc  uint64
-	bits int // free bits remaining in current byte (1-8)
+	bits int // free bits remaining in current byte (0-8)
 
 	// SE table
 	seTable [2 * (seTableSize + 1)]int
@@ -60,15 +68,37 @@ type encoder struct {
 
 // Encode encodes samples using AEC/CCSDS-121.0-B-3 compression.
 // It returns the compressed data.
+//
+// The options follow libaec's aec_encode_init: BitsPerSample 1..32, RSI
+// 1..4096, and BlockSize 8, 16, 32 or 64 (any even size up to 256 when
+// NotEnforce is set). Data3Byte and DataMSB only describe a byte layout and
+// are ignored, because samples are passed as int32.
+//
+// Unsigned samples must lie in [0, 2^BitsPerSample-1] (at 32 bits every int32
+// is taken as its uint32 bit pattern). With DataSigned, samples must lie in
+// [-2^(BitsPerSample-1), 2^(BitsPerSample-1)-1]. Out-of-range samples return
+// ErrData instead of being silently truncated.
+//
+// With PadRSI, each RSI is padded with zero bits to a byte boundary, as
+// libaec does when it is built with ENABLE_RSI_PADDING. The output is
+// byte-identical to libaec's aec_buffer_encode for the same options.
 func Encode(samples []int32, opts Options) ([]byte, error) {
-	if opts.BitsPerSample == 0 || opts.BitsPerSample > 32 {
+	if opts.BitsPerSample <= 0 || opts.BitsPerSample > 32 {
 		return nil, fmt.Errorf("%w: bits_per_sample must be 1..32, got %d", ErrConfig, opts.BitsPerSample)
 	}
-	if opts.BlockSize == 0 || opts.BlockSize&1 != 0 {
-		return nil, fmt.Errorf("%w: block_size must be even and > 0, got %d", ErrConfig, opts.BlockSize)
+	if opts.RSI <= 0 || opts.RSI > maxEncoderRSI {
+		return nil, fmt.Errorf("%w: RSI must be 1..%d, got %d", ErrConfig, maxEncoderRSI, opts.RSI)
 	}
-	if opts.RSI == 0 {
-		return nil, fmt.Errorf("%w: RSI must be > 0", ErrConfig)
+	if opts.Flags&NotEnforce != 0 {
+		if opts.BlockSize <= 0 || opts.BlockSize&1 != 0 || opts.BlockSize > maxNotEnforcedBlockSize {
+			return nil, fmt.Errorf("%w: block_size must be even and 2..%d, got %d", ErrConfig, maxNotEnforcedBlockSize, opts.BlockSize)
+		}
+	} else {
+		switch opts.BlockSize {
+		case 8, 16, 32, 64:
+		default:
+			return nil, fmt.Errorf("%w: block_size must be 8, 16, 32 or 64, got %d", ErrConfig, opts.BlockSize)
+		}
 	}
 
 	e := &encoder{
@@ -82,7 +112,12 @@ func Encode(samples []int32, opts Options) ([]byte, error) {
 		return nil, err
 	}
 
-	e.encode(samples)
+	raw, err := e.toRaw(samples)
+	if err != nil {
+		return nil, err
+	}
+
+	e.encode(raw)
 	return e.out, nil
 }
 
@@ -114,11 +149,7 @@ func (e *encoder) init() error {
 		e.xmin = ^e.xmax
 	} else {
 		e.xmin = 0
-		if e.bitsPerSample == 32 {
-			e.xmax = 0xFFFFFFFF
-		} else {
-			e.xmax = uint32((uint64(1) << e.bitsPerSample) - 1)
-		}
+		e.xmax = uint32((uint64(1) << e.bitsPerSample) - 1)
 	}
 
 	e.kmax = (1 << e.idLen) - 3
@@ -134,12 +165,38 @@ func (e *encoder) init() error {
 		e.dataRaw = e.dataPP
 	}
 
-	// Pre-allocate output buffer (worst case: uncompressed + overhead)
 	e.out = make([]byte, 0, e.rsiSize*4)
 	e.bits = 8
-	e.out = append(e.out, 0) // first byte of output
+	e.out = append(e.out, 0) // current (partially filled) output byte
 
 	return nil
+}
+
+// toRaw validates the samples and converts them to the raw bit patterns
+// libaec reads from its input buffer: the low BitsPerSample bits of each
+// sample. Signed samples are therefore stored in two's complement truncated
+// to BitsPerSample bits; the signed preprocessor sign-extends them again.
+func (e *encoder) toRaw(samples []int32) ([]uint32, error) {
+	raw := make([]uint32, len(samples))
+	signed := e.flags&DataSigned != 0
+	mask := uint32((uint64(1) << e.bitsPerSample) - 1)
+	lo := -(int64(1) << (e.bitsPerSample - 1))
+	hi := (int64(1) << (e.bitsPerSample - 1)) - 1
+	for i, s := range samples {
+		if signed {
+			if int64(s) < lo || int64(s) > hi {
+				return nil, fmt.Errorf("%w: sample %d = %d out of signed %d-bit range [%d, %d]", ErrData, i, s, e.bitsPerSample, lo, hi)
+			}
+			raw[i] = uint32(s) & mask
+		} else {
+			u := uint32(s)
+			if u > e.xmax {
+				return nil, fmt.Errorf("%w: sample %d = %d out of unsigned %d-bit range [0, %d]", ErrData, i, u, e.bitsPerSample, e.xmax)
+			}
+			raw[i] = u
+		}
+	}
+	return raw, nil
 }
 
 // emit writes a sequence of bits to the output stream.
@@ -195,125 +252,82 @@ func (e *encoder) emitblock(k int, refOffset int) {
 	}
 }
 
-func (e *encoder) encode(samples []int32) {
-	n := len(samples)
+// encode runs the libaec block loop (m_get_block / m_check_zero_block /
+// m_select_code_option) over the raw samples.
+func (e *encoder) encode(raw []uint32) {
+	n := len(raw)
 
-	// Convert to uint32
-	raw := make([]uint32, n)
-	for i, s := range samples {
-		raw[i] = uint32(s)
-	}
-
-	// Pad to full RSI boundary
-	for len(raw)%e.rsiSize != 0 {
-		raw = append(raw, raw[len(raw)-1])
-	}
-
-	pos := 0
-	for pos < n {
-		// Load one RSI
+	for pos := 0; pos < n; pos += e.rsiSize {
+		// Load one RSI, padding a short final RSI with its last sample.
 		rsiLen := e.rsiSize
-		if pos+rsiLen > len(raw) {
-			rsiLen = len(raw) - pos
+		if pos+rsiLen > n {
+			rsiLen = n - pos
 		}
 		copy(e.dataRaw[:rsiLen], raw[pos:pos+rsiLen])
-
-		// Pad if needed
 		for i := rsiLen; i < e.rsiSize; i++ {
 			e.dataRaw[i] = e.dataRaw[rsiLen-1]
 		}
 
-		// Preprocess
+		// Only blocks that hold real samples are coded.
+		blocksInRSI := (rsiLen + e.blockSize - 1) / e.blockSize
+
 		if e.pp {
 			e.preprocess()
-		}
-
-		// Encode blocks in this RSI
-		e.ref = 1
-		if e.pp {
-			e.encodedBlkSize = e.blockSize - 1
+			e.ref = 1
 			e.uncompLen = uint32((e.blockSize - 1) * e.bitsPerSample)
 		} else {
-			e.encodedBlkSize = e.blockSize
+			e.ref = 0
 			e.uncompLen = uint32(e.blockSize * e.bitsPerSample)
 		}
 		e.zeroBlocks = 0
 
-		blocksInRSI := e.rsi
-		// If we don't have enough real samples for all blocks, limit
-		remaining := n - pos
-		realBlocks := (remaining + e.blockSize - 1) / e.blockSize
-		if realBlocks < blocksInRSI {
-			blocksInRSI = realBlocks
-		}
-
 		for b := 0; b < blocksInRSI; b++ {
+			if b > 0 && e.ref == 1 {
+				e.ref = 0
+				e.uncompLen = uint32(e.blockSize * e.bitsPerSample)
+			}
 			e.block = e.dataPP[b*e.blockSize : (b+1)*e.blockSize]
 
-			isLastBlock := (b == blocksInRSI-1)
+			isLastBlock := b == blocksInRSI-1
 			blocksDispensed := b + 1
 
-			// Check if block is all zeros (after preprocessing)
 			allZero := true
-			for i := 0; i < e.blockSize; i++ {
-				if e.block[i] != 0 {
+			for _, v := range e.block {
+				if v != 0 {
 					allZero = false
 					break
 				}
 			}
 
-			if allZero {
-				e.zeroBlocks++
-				if e.zeroBlocks == 1 {
-					e.zeroRef = e.ref
-					e.zeroRefSample = e.refSample
-				}
-				// Flush zero blocks if: end of RSI, or at a 64-block boundary, or last block
-				if isLastBlock || blocksDispensed%64 == 0 {
-					if e.zeroBlocks > 4 {
-						e.zeroBlocks = rosEncoder
-					}
-					e.encodeZero()
-				}
-			} else {
+			if !allZero {
 				if e.zeroBlocks > 0 {
-					// Flush accumulated zero blocks first
+					// Emit the pending zero run first.
 					e.encodeZero()
 				}
 				e.selectCodeOption()
+				continue
 			}
 
-			// After first block, subsequent blocks don't have ref
-			if e.ref == 1 {
-				e.ref = 0
-				e.encodedBlkSize = e.blockSize
-				if !e.pp {
-					e.uncompLen = uint32(e.blockSize * e.bitsPerSample)
-				} else {
-					e.uncompLen = uint32(e.blockSize * e.bitsPerSample)
+			e.zeroBlocks++
+			if e.zeroBlocks == 1 {
+				e.zeroRef = e.ref
+				e.zeroRefSample = e.refSample
+			}
+			// Flush the run at the end of the RSI or a 64-block segment.
+			if isLastBlock || blocksDispensed%64 == 0 {
+				if e.zeroBlocks > 4 {
+					e.zeroBlocks = rosEncoder
 				}
+				e.encodeZero()
 			}
 		}
 
-		// Flush any remaining zero blocks
-		if e.zeroBlocks > 0 {
-			if e.zeroBlocks > 4 {
-				e.zeroBlocks = rosEncoder
-			}
-			e.encodeZero()
+		if e.flags&PadRSI != 0 {
+			e.emit(0, e.bits%8)
 		}
-
-		pos += e.rsiSize
 	}
-
-	// Pad final byte with zero bits
-	if e.bits < 8 {
-		// The current byte already has the right content, just ensure it's flushed
-	}
-	// Trim trailing zero byte if bits == 8 and we appended an empty byte
-	if e.bits == 8 && len(e.out) > 1 && e.out[len(e.out)-1] == 0 {
-		e.out = e.out[:len(e.out)-1]
-	}
+	// Like libaec, the final partially filled byte is always output; its
+	// unused low bits are zero.
 }
 
 // preprocess applies the unsigned or signed preprocessor to the current RSI.
@@ -333,7 +347,7 @@ func (e *encoder) preprocessUnsigned() {
 	rsi := e.rsi*e.blockSize - 1
 
 	e.refSample = x[0]
-	d[0] = x[0] // reference sample stored as-is in preprocessed buffer (but not encoded in block)
+	d[0] = 0 // the reference sample is coded separately; libaec zeroes d[0]
 
 	for i := 0; i < rsi; i++ {
 		if x[i+1] >= x[i] {
@@ -364,7 +378,7 @@ func (e *encoder) preprocessSigned() {
 	m := uint32(1) << (e.bitsPerSample - 1)
 
 	e.refSample = x[0]
-	d[0] = x[0]
+	d[0] = 0
 	// Sign extension
 	x[0] = (x[0] ^ m) - m
 

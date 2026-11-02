@@ -1,6 +1,8 @@
 package grib2
 
 import (
+	"compress/gzip"
+	"io"
 	"bufio"
 	"bytes"
 	"fmt"
@@ -11,18 +13,31 @@ import (
 	"testing"
 )
 
-// loadReferenceValues loads the eccodes reference values from
-// testdata/reference/sample.grib2.values (grib_get_data output format).
+// loadReferenceValues loads eccodes reference values (grib_get_data output
+// format) from path, or from path+".gz", which is how they are committed.
 func loadReferenceValues(t *testing.T, path string) []float64 {
 	t.Helper()
+	var r io.Reader
 	f, err := os.Open(path)
-	if err != nil {
+	if os.IsNotExist(err) {
+		f, err = os.Open(path + ".gz")
+		if err != nil {
+			t.Fatalf("open reference values: %v", err)
+		}
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			t.Fatalf("%s.gz: %v", path, err)
+		}
+		r = gz
+	} else if err != nil {
 		t.Fatalf("open reference values: %v", err)
+	} else {
+		r = f
 	}
 	defer f.Close()
 
 	var values []float64
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "Latitude") {
@@ -250,9 +265,6 @@ func saveAndCompareWithEccodes(t *testing.T, filename string, values []float64) 
 
 	// Check if we have a reference file
 	refPath := fmt.Sprintf("testdata/reference/%s.values", filename)
-	if _, err := os.Stat(refPath); os.IsNotExist(err) {
-		t.Skipf("no reference file at %s (generate with grib_get_data)", refPath)
-	}
 
 	refValues := loadReferenceValues(t, refPath)
 	if len(refValues) != len(values) {

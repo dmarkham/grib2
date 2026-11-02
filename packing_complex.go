@@ -74,7 +74,23 @@ func unpackComplexInternal(data []byte, tmpl52 Template52, numValues uint32,
 	}
 
 	bpv := int(tmpl52.BitsPerValue)
+	if bpv > 63 {
+		return nil, fmt.Errorf("grib2: complex packing: invalid bits per value %d", bpv)
+	}
+	if orderOfSpatialDiff > 0 {
+		// eccodes DataG22OrderPacking.cc supports orders 1 and 2 only
+		// (tests/grib_complex_spatial_differencing.sh).
+		if orderOfSpatialDiff > 2 {
+			return nil, fmt.Errorf("grib2: complex packing: unsupported order of spatial differencing %d", orderOfSpatialDiff)
+		}
+		if numOctetsExtra == 0 || numOctetsExtra > 7 {
+			return nil, fmt.Errorf("grib2: complex packing: invalid number of octets for extra descriptors %d", numOctetsExtra)
+		}
+	}
 	missingMgmt := int(tmpl52.MissingValueManagement)
+	if missingMgmt > 2 {
+		return nil, fmt.Errorf("grib2: complex packing: invalid missing value management %d", missingMgmt)
+	}
 	refGroupWidths := int(tmpl52.ReferenceForGroupWidths)
 	nBitsGroupWidths := int(tmpl52.NumberOfBitsForGroupWidths)
 	refGroupLengths := int(tmpl52.ReferenceForGroupLengths)
@@ -155,15 +171,21 @@ func unpackComplexInternal(data []byte, tmpl52 Template52, numValues uint32,
 			widthBitPos += uint64(nBitsGroupWidths)
 		}
 		nbitsPerGroupVal += refGroupWidths
+		if nbitsPerGroupVal > 63 {
+			return nil, fmt.Errorf("grib2: complex packing: group %d width %d exceeds 63 bits", i, nbitsPerGroupVal)
+		}
 
 		// Last group uses true length
 		if i == nGroups-1 {
 			nvalsPerGroup = int64(trueLenLastGroup)
 		}
 
-		if int64(vcount)+nvalsPerGroup > int64(nVals) {
+		if nvalsPerGroup < 0 || int64(vcount)+nvalsPerGroup > int64(nVals) {
 			return nil, fmt.Errorf("grib2: complex packing: group %d overflow: vcount=%d + nvalsPerGroup=%d > nVals=%d",
 				i, vcount, nvalsPerGroup, nVals)
+		}
+		if need := valsBitPos + uint64(nvalsPerGroup)*uint64(nbitsPerGroupVal); need > uint64(len(bufVals))*8 {
+			return nil, fmt.Errorf("grib2: complex packing: group %d needs %d bits of packed values, section 7 has %d", i, need, len(bufVals)*8)
 		}
 
 		// Decode values within the group
@@ -228,6 +250,10 @@ func unpackComplexInternal(data []byte, tmpl52 Template52, numValues uint32,
 		}
 
 		vcount += int(nvalsPerGroup)
+	}
+
+	if vcount != nVals {
+		return nil, fmt.Errorf("grib2: complex packing: groups hold %d values, %d declared", vcount, nVals)
 	}
 
 	// Phase 2: Spatial differencing (if applicable)
