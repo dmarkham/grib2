@@ -88,6 +88,13 @@ type projectedGrid struct {
 	// (the pole a Lambert cone opens away from). nil when the projection has
 	// no forward mapping yet.
 	forward func(lat, lon float64) (x, y float64, ok bool)
+	// north returns the bearing of the +y axis at (lat, lon): the angle in
+	// radians, clockwise from true north, of the direction the grid calls
+	// north. nil when not known yet.
+	north func(lat, lon float64) float64
+	// period is the number of columns in one turn of longitude on a map
+	// that repeats along x (Mercator), 0 on one that does not.
+	period float64
 	// singleValued is true when no two points of the grid's rectangle share
 	// a geographic position, so a point's cell in the plane is also where it
 	// is on the Earth.
@@ -195,7 +202,45 @@ func (g *projectedGrid) weights(lat, lon float64) (BilinearWeights, error) {
 	// distance; limiting it first keeps the index arithmetic in range.
 	fi = math.Max(-1, math.Min(fi, float64(g.nx)))
 	fj = math.Max(-1, math.Min(fj, float64(g.ny)))
-	return cornerWeights(fi, fj, g.nx, g.ny), nil
+	if !g.aroundTheWorld() {
+		return cornerWeights(fi, fj, g.nx, g.ny), nil
+	}
+	// The grid goes all the way round in longitude: the cell between the
+	// last and first columns is a real cell, so wrap instead of clamping.
+	w := cornerWeights(0, fj, 2, g.ny) // rows only
+	i0 := int(math.Floor(fi))
+	xFrac := fi - float64(i0)
+	i0 = ((i0 % g.nx) + g.nx) % g.nx
+	i1 := (i0 + 1) % g.nx
+	j0, j1 := w.Index[0]/2, w.Index[2]/2
+	return BilinearWeights{
+		Index:   [4]int{j0*g.nx + i0, j0*g.nx + i1, j1*g.nx + i0, j1*g.nx + i1},
+		XFrac:   xFrac,
+		YFrac:   w.YFrac,
+		Outside: w.Outside,
+	}, nil
+}
+
+// aroundTheWorld reports whether the columns go all the way round in
+// longitude, so that column nx-1 is the western neighbour of column 0.
+func (g *projectedGrid) aroundTheWorld() bool {
+	return g.period > 0 && math.Abs(g.period-float64(g.nx)) < 1e-3
+}
+
+// projectedGridOf returns the geometry of a Mercator, polar stereographic or
+// Lambert conformal grid; ok is false for any other template.
+func projectedGridOf(tmpl GridDefinitionTemplate) (g *projectedGrid, ok bool, err error) {
+	switch t := tmpl.(type) {
+	case Template310:
+		g, err = mercatorGrid(t)
+	case Template320:
+		g, err = polarStereographicGrid(t)
+	case Template330:
+		g, err = lambertGrid(t)
+	default:
+		return nil, false, nil
+	}
+	return g, true, err
 }
 
 // nearest returns the canonical index of the grid point closest (great
@@ -246,17 +291,6 @@ func (g *projectedGrid) nearest(lat, lon float64) (idx int, nearLat, nearLon flo
 		}
 	}
 	return idx, nearLat, nearLon, nil
-}
-
-// projectedCanonical lays out a projected grid in canonical order. point
-// maps an offset (x, y) in metres from the first grid point to geographic
-// coordinates.
-func projectedCanonical(nx, ny int, dx, dy float64, scanMode uint8, point func(x, y float64) (lat, lon float64, err error)) ([]float64, []float64, error) {
-	g, err := newProjectedGrid(nx, ny, dx, dy, scanMode, point)
-	if err != nil {
-		return nil, nil, err
-	}
-	return g.coords()
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +435,16 @@ func coordUnrotate(inlat, inlon, angleOfRot, southPoleLat, southPoleLon float64)
 // ---------------------------------------------------------------------------
 
 func gridCoordsMercator(t Template310) ([]float64, []float64, error) {
+	g, err := mercatorGrid(t)
+	if err != nil {
+		return nil, nil, err
+	}
+	return g.coords()
+}
+
+// mercatorGrid returns the geometry of a Mercator grid, with the projection
+// in both directions.
+func mercatorGrid(t Template310) (*projectedGrid, error) {
 	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
 	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
 	laD := float64(t.LaD) * 1e-6
@@ -411,10 +455,10 @@ func gridCoordsMercator(t Template310) ([]float64, []float64, error) {
 		t.ScaleFactorOfEarthMajorAxis, t.ScaledValueOfEarthMajorAxis,
 		t.ScaleFactorOfEarthMinorAxis, t.ScaledValueOfEarthMinorAxis)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if math.Abs(lat1) >= 90 || math.Abs(laD) >= 90 {
-		return nil, nil, fmt.Errorf("grib2: Mercator: latitudes must be within (-90, 90): lat1=%v LaD=%v", lat1, laD)
+		return nil, fmt.Errorf("grib2: Mercator: latitudes must be within (-90, 90): lat1=%v LaD=%v", lat1, laD)
 	}
 
 	const deg2rad = math.Pi / 180.0
@@ -434,13 +478,42 @@ func gridCoordsMercator(t Template310) ([]float64, []float64, error) {
 	x0 := major * m1 * coordAdjustLonRadians(lonFirstRad-orientRad)
 	y0 := -major * m1 * math.Log(ts)
 
-	return projectedCanonical(int(t.Ni), int(t.Nj), float64(t.Di)*1e-3, float64(t.Dj)*1e-3, t.ScanningMode,
+	g, err := newProjectedGrid(int(t.Ni), int(t.Nj), float64(t.Di)*1e-3, float64(t.Dj)*1e-3, t.ScanningMode,
 		func(x, y float64) (float64, float64, error) {
 			ts2 := math.Exp(-(y + y0) / (major * m1))
 			latRad := coordComputePhi(e, ts2)
 			lonRad := coordAdjustLonRadians(orientRad + (x+x0)/(major*m1))
 			return latRad * rad2deg, lonRad * rad2deg, nil
 		})
+	if err != nil {
+		return nil, err
+	}
+
+	// The map repeats along x every turn of longitude. Of the copies of a
+	// point a turn apart, take the one nearest the middle of the grid, so a
+	// point off one side is not found a whole turn away off the other.
+	turn := 2 * math.Pi * major * m1
+	xMin, xMax, _, _ := g.bounds()
+	xMid := (xMin + xMax) / 2
+	g.forward = func(lat, lon float64) (float64, float64, bool) {
+		// The poles are at infinity.
+		if !(math.Abs(lat) < 90-1e-9) || math.IsNaN(lon) || math.IsInf(lon, 0) {
+			return 0, 0, false
+		}
+		phi := lat * deg2rad
+		x := major*m1*math.Remainder(lon*deg2rad-orientRad, 2*math.Pi) - x0
+		y := -major*m1*math.Log(coordComputeT(e, phi, math.Sin(phi))) - y0
+		x = xMid + math.Remainder(x-xMid, turn)
+		if math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) {
+			return 0, 0, false
+		}
+		return x, y, true
+	}
+	g.period = turn / g.dx
+	// A grid wider than one turn holds the same places twice.
+	g.singleValued = float64(g.nx) <= g.period+1e-3
+	g.north = func(_, _ float64) float64 { return 0 } // the y axis is a meridian everywhere
+	return g, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +521,16 @@ func gridCoordsMercator(t Template310) ([]float64, []float64, error) {
 // ---------------------------------------------------------------------------
 
 func gridCoordsPolarStereographic(t Template320) ([]float64, []float64, error) {
+	g, err := polarStereographicGrid(t)
+	if err != nil {
+		return nil, nil, err
+	}
+	return g.coords()
+}
+
+// polarStereographicGrid returns the geometry of a polar stereographic grid,
+// with the projection in both directions.
+func polarStereographicGrid(t Template320) (*projectedGrid, error) {
 	lat1 := float64(t.LatitudeOfFirstGridPoint) * 1e-6
 	lon1 := float64(t.LongitudeOfFirstGridPoint) * 1e-6
 	laD := float64(t.LaD) * 1e-6
@@ -458,11 +541,11 @@ func gridCoordsPolarStereographic(t Template320) ([]float64, []float64, error) {
 		t.ScaleFactorOfEarthMajorAxis, t.ScaledValueOfEarthMajorAxis,
 		t.ScaleFactorOfEarthMinorAxis, t.ScaledValueOfEarthMinorAxis)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if major != minor {
 		// eccodes refuses this too (tests/grib_grid_polar_stereographic.sh).
-		return nil, nil, fmt.Errorf("grib2: polar stereographic on an oblate Earth (shape %d) is not supported", t.ShapeOfEarth)
+		return nil, fmt.Errorf("grib2: polar stereographic on an oblate Earth (shape %d) is not supported", t.ShapeOfEarth)
 	}
 	radius := major
 
@@ -503,7 +586,7 @@ func gridCoordsPolarStereographic(t Template320) ([]float64, []float64, error) {
 	x0 := sign * h * math.Sin(con1)
 	y0 := -sign * h * math.Cos(con1)
 
-	return projectedCanonical(int(t.Nx), int(t.Ny), float64(t.Dx)*1e-3, float64(t.Dy)*1e-3, t.ScanningMode,
+	g, err := newProjectedGrid(int(t.Nx), int(t.Ny), float64(t.Dx)*1e-3, float64(t.Dy)*1e-3, t.ScanningMode,
 		func(x, y float64) (float64, float64, error) {
 			px := (x + x0) * sign
 			py := (y + y0) * sign
@@ -521,6 +604,33 @@ func gridCoordsPolarStereographic(t Template320) ([]float64, []float64, error) {
 			}
 			return lat * rad2deg, lon * rad2deg, nil
 		})
+	if err != nil {
+		return nil, err
+	}
+
+	g.forward = func(lat, lon float64) (float64, float64, bool) {
+		// The pole opposite the one in the plane is at infinity.
+		if !(lat >= -90 && lat <= 90) || sign*lat < -90+1e-9 || math.IsNaN(lon) || math.IsInf(lon, 0) {
+			return 0, 0, false
+		}
+		con := sign * math.Remainder(lon*deg2rad-centralLon, 2*math.Pi)
+		h := height(math.Tan(0.5 * (piOver2 - sign*lat*deg2rad)))
+		x := sign*h*math.Sin(con) - x0
+		y := -sign*h*math.Cos(con) - y0
+		if math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) {
+			return 0, 0, false
+		}
+		return x, y, true
+	}
+	// The plane holds every place but the far pole exactly once.
+	g.singleValued = true
+	// Meridians are straight lines through the pole at their true angles,
+	// so the y axis is parallel to the meridian of the grid's orientation.
+	// Seen from above the south pole, east is the other way round.
+	g.north = func(_, lon float64) float64 {
+		return sign * math.Remainder(lon*deg2rad-centralLon, 2*math.Pi)
+	}
+	return g, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -643,6 +753,15 @@ func lambertGrid(t Template330) (*projectedGrid, error) {
 			return 0, 0, false
 		}
 		return x, y, true
+	}
+
+	// The meridian through a point meets the central meridian at the apex
+	// at an angle of ns times their difference in longitude (the
+	// convergence of meridians), on a sphere and on a spheroid alike. East
+	// of the central meridian of a northern cone true north leans to the
+	// left on the map, so the +y axis is that much clockwise of true north.
+	g.north = func(_, lon float64) float64 {
+		return ns * math.Remainder(lon*deg2rad-loV, 2*math.Pi)
 	}
 
 	// The plane holds the Earth once only between the two images of the

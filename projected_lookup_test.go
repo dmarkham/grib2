@@ -10,11 +10,12 @@ import (
 	"testing"
 )
 
-// lambertProjReference records where PROJ puts a fixed set of points on the
-// grid of every Lambert conformal fixture: latitude, longitude, and the
-// fractional canonical column and row. scripts/gen_lambert_reference.py
-// writes it; the tests need neither PROJ nor eccodes.
-const lambertProjReference = "testdata/reference/lambert_proj.json"
+// projReference records where PROJ puts a fixed set of points on the grid
+// of every Mercator, polar stereographic and Lambert conformal fixture:
+// latitude, longitude, the fractional canonical column and row, and the
+// meridian convergence. scripts/gen_projection_reference.py writes it; the
+// tests need neither PROJ nor eccodes.
+const projReference = "testdata/reference/projected_grids_proj.json"
 
 // hrrrCloudFixture is six cloud fields (messages 112-117: boundary layer,
 // low, middle, high and total cloud cover, and the cloud ceiling, which has
@@ -24,32 +25,32 @@ const lambertProjReference = "testdata/reference/lambert_proj.json"
 // conformal on a sphere.
 const hrrrCloudFixture = "testdata/hrrr_cloud.grib2"
 
-type lambertProjRef struct {
+type projRef struct {
 	ProjVersion string `json:"proj_version"`
 	Fixtures    map[string]struct {
 		Proj   string       `json:"proj"`
-		Points [][4]float64 `json:"points"` // lat, lon, column, row
+		Points [][5]float64 `json:"points"` // lat, lon, column, row, PROJ's meridian convergence in degrees
 	} `json:"fixtures"`
 }
 
-func loadLambertProjRef(t *testing.T) lambertProjRef {
+func loadProjRef(t *testing.T) projRef {
 	t.Helper()
-	raw, err := os.ReadFile(lambertProjReference)
+	raw, err := os.ReadFile(projReference)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var ref lambertProjRef
+	var ref projRef
 	if err := json.Unmarshal(raw, &ref); err != nil {
 		t.Fatal(err)
 	}
 	return ref
 }
 
-// lambertFixtures returns the first field of every fixture whose grid is
-// Lambert conformal. testdata/lambert.grib2 is left out: its section 3
-// describes a 349x277 grid but the message holds 496 points, so it has no
-// usable grid (TestLookup_LambertWrongPointCount).
-func lambertFixtures(t *testing.T) map[string]*Field {
+// projectedFixtures returns the first field of every fixture on a usable
+// Mercator, polar stereographic or Lambert conformal grid. Two fixtures are
+// left out because their grid definitions describe no usable grid
+// (TestLookup_UnusableProjectedGrids).
+func projectedFixtures(t *testing.T) map[string]*Field {
 	t.Helper()
 	out := map[string]*Field{}
 	for _, p := range allFixturePaths(t) {
@@ -58,36 +59,38 @@ func lambertFixtures(t *testing.T) map[string]*Field {
 			continue
 		}
 		f := &msgs[0].Fields[0]
-		if t330, ok := f.Section3.Template.(Template330); ok && t330.Nx*t330.Ny == f.Section3.NumberOfDataPoints {
+		g, ok, err := projectedGridOf(f.Section3.Template)
+		if ok && err == nil && g.nx*g.ny == int(f.Section3.NumberOfDataPoints) {
 			out[p] = f
 		}
 	}
-	if len(out) < 8 {
-		t.Fatalf("only %d Lambert fixtures", len(out))
+	if len(out) < 18 {
+		t.Fatalf("only %d projected fixtures", len(out))
 	}
 	return out
 }
 
-func mustLambertGrid(t *testing.T, f *Field) *projectedGrid {
+func mustProjectedGrid(t *testing.T, f *Field) *projectedGrid {
 	t.Helper()
-	g, err := lambertGrid(f.Section3.Template.(Template330))
-	if err != nil {
-		t.Fatal(err)
+	g, ok, err := projectedGridOf(f.Section3.Template)
+	if !ok || err != nil {
+		t.Fatalf("%T: %v", f.Section3.Template, err)
 	}
 	return g
 }
 
-// TestLambertWeights_PROJ checks the forward projection against PROJ: every
-// reference point must land on the fractional column and row PROJ gives,
-// inside and outside the grid, on a sphere and a spheroid, north and south
-// of the equator, tangent and secant, and with -i and -j scanning. Weights
-// must then pick PROJ's cell and fractions.
-func TestLambertWeights_PROJ(t *testing.T) {
-	ref := loadLambertProjRef(t)
-	fixtures := lambertFixtures(t)
+// TestProjectedWeights_PROJ checks the forward projections against PROJ:
+// every reference point must land on the fractional column and row PROJ
+// gives, inside and outside the grid, on Mercator, polar stereographic and
+// Lambert grids, on a sphere and a spheroid, north and south of the
+// equator, tangent and secant, and with -i and -j scanning. Weights must
+// then pick PROJ's cell and fractions.
+func TestProjectedWeights_PROJ(t *testing.T) {
+	ref := loadProjRef(t)
+	fixtures := projectedFixtures(t)
 	for p := range ref.Fixtures {
 		if fixtures[p] == nil {
-			t.Errorf("%s is in %s but is not a Lambert fixture; regenerate", p, lambertProjReference)
+			t.Errorf("%s is in %s but is not a projected fixture; regenerate", p, projReference)
 		}
 	}
 	// PROJ and this package agree to well under a millimetre; 1e-7 of a
@@ -97,9 +100,9 @@ func TestLambertWeights_PROJ(t *testing.T) {
 		t.Run(p, func(t *testing.T) {
 			r, ok := ref.Fixtures[p]
 			if !ok {
-				t.Fatalf("not in %s; regenerate with scripts/gen_lambert_reference.py", lambertProjReference)
+				t.Fatalf("not in %s; regenerate with scripts/gen_projection_reference.py", projReference)
 			}
-			g := mustLambertGrid(t, f)
+			g := mustProjectedGrid(t, f)
 			s, err := NewSampler(f)
 			if err != nil {
 				t.Fatal(err)
@@ -158,17 +161,18 @@ func TestLambertWeights_PROJ(t *testing.T) {
 	}
 }
 
-// TestLambertWeights_EveryNode: at the coordinates GridCoordinates gives for
-// a grid point, Weights must put the whole weight on that point. It runs
-// over every point of every Lambert fixture, 1.9 million of them on HRRR.
-func TestLambertWeights_EveryNode(t *testing.T) {
-	for p, f := range lambertFixtures(t) {
+// TestProjectedWeights_EveryNode: at the coordinates GridCoordinates gives
+// for a grid point, Weights must put the whole weight on that point. It
+// runs over every point of every projected fixture, 1.9 million of them on
+// HRRR and 1.2 million on HRRR-Alaska.
+func TestProjectedWeights_EveryNode(t *testing.T) {
+	for p, f := range projectedFixtures(t) {
 		t.Run(p, func(t *testing.T) {
 			lats, lons, err := f.GridCoordinates()
 			if err != nil {
 				t.Fatal(err)
 			}
-			g := mustLambertGrid(t, f)
+			g := mustProjectedGrid(t, f)
 			s, err := NewSampler(f)
 			if err != nil {
 				t.Fatal(err)
@@ -202,15 +206,15 @@ func TestLambertWeights_EveryNode(t *testing.T) {
 	}
 }
 
-// TestLambertNearest_MatchesFullSearch: the direct NearestValue lookup must
+// TestProjectedNearest_MatchesFullSearch: the direct NearestValue lookup must
 // return exactly what the search over every grid point returns (the same
 // index and the same coordinates, bit for bit) at grid points, between
 // them, at cell centres and edges where neighbours are almost equally far,
 // outside the grid, at the poles and on the far side of the Earth.
-func TestLambertNearest_MatchesFullSearch(t *testing.T) {
-	for p, f := range lambertFixtures(t) {
+func TestProjectedNearest_MatchesFullSearch(t *testing.T) {
+	for p, f := range projectedFixtures(t) {
 		t.Run(p, func(t *testing.T) {
-			g := mustLambertGrid(t, f)
+			g := mustProjectedGrid(t, f)
 			if !g.singleValued {
 				t.Fatal("grid is not taken to be single valued, so the direct lookup is not used")
 			}
@@ -379,6 +383,143 @@ func TestLambertGrid_SingleValued(t *testing.T) {
 	}
 }
 
+// TestMercator_LongitudeAndPoles: a Mercator map repeats every turn of
+// longitude, so a point off one side of the grid must be found just off
+// that side, not a whole turn away off the other; a grid that goes all the
+// way round interpolates across its seam; and the poles, which the map
+// cannot show, are an error.
+func TestMercator_LongitudeAndPoles(t *testing.T) {
+	f := firstField(t, "testdata/mercator.grib2") // 56x44 points, 262.04 to 284.98 E
+	s, err := NewSampler(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const nx = 56
+	for _, c := range []struct {
+		lon      float64
+		wantCol0 int // column of the western corners of the clamped cell
+	}{
+		{262.036 - 3, 0}, {262.036 - 3 - 360, 0}, {262.036 - 30, 0}, {-97.964 - 30, 0},
+		{284.975 + 3, nx - 2}, {284.975 + 3 + 720, nx - 2}, {284.975 + 30, nx - 2},
+	} {
+		w, err := s.Weights(20, c.lon)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !w.Outside || w.Index[0]%nx != c.wantCol0 {
+			t.Errorf("longitude %v: Weights = %+v, want outside, clamped to column %d", c.lon, w, c.wantCol0)
+		}
+	}
+	for _, lat := range []float64{90, -90} {
+		if w, err := s.Weights(lat, 270); err == nil {
+			t.Errorf("latitude %v: Weights = %+v, want an error", lat, w)
+		}
+		if _, nLat, _, err := nearestIndex(f, lat, 270); err != nil || (lat > 0) != (nLat > 25) {
+			t.Errorf("latitude %v: nearest grid point at latitude %v (%v)", lat, nLat, err)
+		}
+	}
+
+	// A grid of 360 columns one degree apart, all the way round.
+	const radius, cols, rows = 6371229.0, 360, 121
+	cell := 2 * math.Pi * radius / cols
+	world := Template310{
+		ShapeOfEarth: 6, Ni: cols, Nj: rows,
+		LatitudeOfFirstGridPoint: -45_000_000, LongitudeOfFirstGridPoint: 0, LaD: 0,
+		ScanningMode: 0x40, Di: uint32(math.Round(cell * 1e3)), Dj: uint32(math.Round(cell * 1e3)),
+	}
+	wf := &Field{Section3: Section3{NumberOfDataPoints: cols * rows, Template: world}}
+	g, err := mercatorGrid(world)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !g.aroundTheWorld() || !g.singleValued {
+		t.Fatalf("aroundTheWorld %v, singleValued %v, %v columns to a turn", g.aroundTheWorld(), g.singleValued, g.period)
+	}
+	ws, err := NewSampler(wf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lats, lons, err := wf.GridCoordinates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lonField := make([]float64, len(lats)) // a field that is linear across the seam
+	for k := range lonField {
+		lonField[k] = math.Cos(deg2rad(lons[k]))
+	}
+	// Between the last column (359 E) and the first (0 E). The grid length
+	// is stored in whole millimetres, so 360 of them miss a full turn by
+	// 0.15 m, a millionth of a cell.
+	w, err := ws.Weights(10, 359.25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Outside || w.Index[0]%cols != cols-1 || w.Index[1]%cols != 0 || math.Abs(w.XFrac-0.25) > 1e-5 {
+		t.Errorf("in the seam: Weights = %+v, want columns %d and 0, a quarter of the way", w, cols-1)
+	}
+	v, err := w.Interpolate(lonField)
+	if want := 0.75*math.Cos(deg2rad(359)) + 0.25; err != nil || math.Abs(v-want) > 1e-8 {
+		t.Errorf("in the seam: interpolated %v (%v), want %v", v, err, want)
+	}
+	if w2, _ := ws.Weights(10, -0.75); w2.Index != w.Index || math.Abs(w2.XFrac-w.XFrac) > 1e-5 {
+		t.Errorf("longitude -0.75: Weights = %+v, at 359.25 %+v", w2, w)
+	}
+	// Nearest, across the seam and everywhere else, is the full search's.
+	rnd := rand.New(rand.NewSource(10))
+	for i := range 3000 {
+		lat, lon := rnd.Float64()*120-60, rnd.Float64()*360
+		if i%3 == 0 {
+			lon = 359 + rnd.Float64()*2 // around the seam
+		}
+		want := nearestAmong(lats, lons, lat, lon)
+		if idx, _, _, err := nearestIndex(wf, lat, lon); err != nil || idx != want {
+			t.Fatalf("nearest (%v, %v) = %d (%v), the full search finds %d", lat, lon, idx, err, want)
+		}
+	}
+
+	// Twice round holds every place twice, so nearest uses the full search.
+	twice := world
+	twice.Ni = 2 * cols
+	g2, err := mercatorGrid(twice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g2.singleValued || g2.aroundTheWorld() {
+		t.Errorf("720 columns: singleValued %v, aroundTheWorld %v", g2.singleValued, g2.aroundTheWorld())
+	}
+}
+
+// TestPolarStereographic_Poles: the pole a polar stereographic grid is
+// centred on is a point of the map; the opposite one is not.
+func TestPolarStereographic_Poles(t *testing.T) {
+	for _, c := range []struct {
+		fixture       string
+		pole, farPole float64
+	}{{hrrrAlaskaWindFixture, 90, -90}, {"testdata/upstream/ps_south.grib2", -90, 90}} {
+		f := firstField(t, c.fixture)
+		s, err := NewSampler(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lats, lons, err := f.GridCoordinates()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w, err := s.Weights(c.pole, 0); err != nil || !w.Outside {
+			t.Errorf("%s: Weights at its pole = %+v (%v), want outside the grid", c.fixture, w, err)
+		}
+		if w, err := s.Weights(c.farPole, 0); err == nil {
+			t.Errorf("%s: Weights at the far pole = %+v, want an error", c.fixture, w)
+		}
+		for _, lat := range []float64{c.pole, c.farPole} {
+			want := nearestAmong(lats, lons, lat, 0)
+			if idx, _, _, err := nearestIndex(f, lat, 0); err != nil || idx != want {
+				t.Errorf("%s: nearest to latitude %v = %d (%v), the full search finds %d", c.fixture, lat, idx, err, want)
+			}
+		}
+	}
+}
+
 // bilinearAt interpolates by hand at a fractional column and row.
 func bilinearAt(vals []float64, nx int, col, row float64) float64 {
 	i, j := int(math.Floor(col)), int(math.Floor(row))
@@ -406,9 +547,9 @@ func TestHRRR_Sampler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref := loadLambertProjRef(t).Fixtures[hrrrCloudFixture]
+	ref := loadProjRef(t).Fixtures[hrrrCloudFixture]
 	if len(ref.Points) == 0 {
-		t.Fatalf("%s has no points for %s", lambertProjReference, hrrrCloudFixture)
+		t.Fatalf("%s has no points for %s", projReference, hrrrCloudFixture)
 	}
 
 	for k, f := range fields {
@@ -549,18 +690,21 @@ func BenchmarkNearestIndex_Lambert(b *testing.B) {
 	}
 }
 
-// TestLookup_LambertWrongPointCount: testdata/lambert.grib2 declares 496
-// data points on a 349x277 grid. Every lookup must refuse it instead of
-// indexing values that are not there.
-func TestLookup_LambertWrongPointCount(t *testing.T) {
-	f := &decodeAll(t, "testdata/lambert.grib2")[0].Fields[0]
-	if _, err := NewSampler(f); err == nil {
-		t.Error("NewSampler accepted a grid whose size is not the number of data points")
-	}
-	if _, err := f.BilinearValue(40, -100); err == nil {
-		t.Error("BilinearValue accepted a grid whose size is not the number of data points")
-	}
-	if _, _, _, _, err := f.NearestValue(40, -100); err == nil {
-		t.Error("NearestValue accepted a grid whose size is not the number of data points")
+// TestLookup_UnusableProjectedGrids: testdata/lambert.grib2 declares 496
+// data points on a 349x277 grid, and testdata/polar_stereographic.grib2 has
+// grid lengths of 0. Every lookup must refuse them instead of indexing
+// values that are not there.
+func TestLookup_UnusableProjectedGrids(t *testing.T) {
+	for _, p := range []string{"testdata/lambert.grib2", "testdata/polar_stereographic.grib2"} {
+		f := &decodeAll(t, p)[0].Fields[0]
+		if _, err := NewSampler(f); err == nil {
+			t.Errorf("%s: NewSampler accepted a grid definition that describes no usable grid", p)
+		}
+		if _, err := f.BilinearValue(40, -100); err == nil {
+			t.Errorf("%s: BilinearValue accepted a grid definition that describes no usable grid", p)
+		}
+		if _, _, _, _, err := f.NearestValue(40, -100); err == nil {
+			t.Errorf("%s: NearestValue accepted a grid definition that describes no usable grid", p)
+		}
 	}
 }

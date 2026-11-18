@@ -279,7 +279,7 @@ func TestBilinearValue_ReducedGaussianError(t *testing.T) {
 // TestBilinearValue_UnsupportedTemplateError verifies that BilinearValue
 // returns an error for unsupported grid templates.
 func TestBilinearValue_UnsupportedTemplateError(t *testing.T) {
-	for _, tmpl := range []GridDefinitionTemplate{Template310{}, Template320{}, Template390{}} {
+	for _, tmpl := range []GridDefinitionTemplate{Template390{}, Template340{Ni: 0xFFFFFFFF}} {
 		field := Field{Section3: Section3{Template: tmpl}}
 		if _, err := field.BilinearValue(0, 0); err == nil {
 			t.Errorf("BilinearValue should return an error for %T", tmpl)
@@ -287,18 +287,20 @@ func TestBilinearValue_UnsupportedTemplateError(t *testing.T) {
 	}
 }
 
-// TestLookup_LambertInvalidGrid: a Lambert grid definition that describes
-// no grid (all zeros) is an error from every lookup, not a panic.
-func TestLookup_LambertInvalidGrid(t *testing.T) {
-	field := Field{Section3: Section3{Template: Template330{}}}
-	if _, _, _, _, err := field.NearestValue(40, -100); err == nil {
-		t.Error("NearestValue accepted an empty Lambert grid definition")
-	}
-	if _, err := field.BilinearValue(40, -100); err == nil {
-		t.Error("BilinearValue accepted an empty Lambert grid definition")
-	}
-	if _, err := NewSampler(&field); err == nil {
-		t.Error("NewSampler accepted an empty Lambert grid definition")
+// TestLookup_ProjectedInvalidGrid: a projected grid definition that
+// describes no grid (all zeros) is an error from every lookup, not a panic.
+func TestLookup_ProjectedInvalidGrid(t *testing.T) {
+	for _, tmpl := range []GridDefinitionTemplate{Template310{}, Template320{}, Template330{}} {
+		field := Field{Section3: Section3{Template: tmpl}}
+		if _, _, _, _, err := field.NearestValue(40, -100); err == nil {
+			t.Errorf("NearestValue accepted an empty %T", tmpl)
+		}
+		if _, err := field.BilinearValue(40, -100); err == nil {
+			t.Errorf("BilinearValue accepted an empty %T", tmpl)
+		}
+		if _, err := NewSampler(&field); err == nil {
+			t.Errorf("NewSampler accepted an empty %T", tmpl)
+		}
 	}
 }
 

@@ -1,0 +1,176 @@
+# The 170 messages of NOAA's HRRR CONUS surface file hrrr.t05z.wrfsfcf01.grib2 of 2026-11-17
+# (https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20261117/conus/), all from centre 7 (NCEP).
+# Columns, tab separated: message, discipline, parameter category, parameter number,
+# abbreviation and level from NOAA's .idx file next to it (written by wgrib2), and eccodes' name
+# (grib_get -p count,discipline,parameterCategory,parameterNumber,name; 'unknown' when it has none).
+# TestParameterNameFor_HRRR reads it.
+1	0	16	196	REFC	entire atmosphere	Maximum/Composite radar reflectivity
+2	0	16	3	RETOP	cloud top	unknown
+3	0	16	201	var discipline=0 center=7 local_table=1 parmcat=16 parm=201	entire atmosphere	unknown
+4	0	15	3	VIL	entire atmosphere	Vertically-integrated liquid
+5	0	19	0	VIS	surface	Visibility
+6	0	16	195	REFD	1000 m above ground	Derived radar reflectivity
+7	0	16	195	REFD	4000 m above ground	Derived radar reflectivity
+8	0	16	195	REFD	263 K level	Derived radar reflectivity
+9	0	2	22	GUST	surface	Wind speed (gust)
+10	0	2	2	UGRD	250 mb	U component of wind
+11	0	2	3	VGRD	250 mb	V component of wind
+12	0	2	2	UGRD	300 mb	U component of wind
+13	0	2	3	VGRD	300 mb	V component of wind
+14	0	3	5	HGT	500 mb	Geopotential height
+15	0	0	0	TMP	500 mb	Temperature
+16	0	0	6	DPT	500 mb	Dew point temperature
+17	0	2	2	UGRD	500 mb	U component of wind
+18	0	2	3	VGRD	500 mb	V component of wind
+19	0	3	5	HGT	700 mb	Geopotential height
+20	0	0	0	TMP	700 mb	Temperature
+21	0	0	6	DPT	700 mb	Dew point temperature
+22	0	2	9	DZDT	700 mb	Geometric vertical velocity
+23	0	2	2	UGRD	700 mb	U component of wind
+24	0	2	3	VGRD	700 mb	V component of wind
+25	0	3	5	HGT	850 mb	Geopotential height
+26	0	0	0	TMP	850 mb	Temperature
+27	0	0	6	DPT	850 mb	Dew point temperature
+28	0	2	2	UGRD	850 mb	U component of wind
+29	0	2	3	VGRD	850 mb	V component of wind
+30	0	0	0	TMP	925 mb	Temperature
+31	0	0	6	DPT	925 mb	Dew point temperature
+32	0	2	2	UGRD	925 mb	U component of wind
+33	0	2	3	VGRD	925 mb	V component of wind
+34	0	0	0	TMP	1000 mb	Temperature
+35	0	0	6	DPT	1000 mb	Dew point temperature
+36	0	2	2	UGRD	1000 mb	U component of wind
+37	0	2	3	VGRD	1000 mb	V component of wind
+38	0	2	220	MAXUVV	100-1000 mb above ground	unknown
+39	0	2	221	MAXDVV	100-1000 mb above ground	unknown
+40	0	2	9	DZDT	0.5-0.8 sigma layer	Geometric vertical velocity
+41	0	3	198	MSLMA	mean sea level	MSLP (MAPS System Reduction)
+42	0	3	5	HGT	1000 mb	Geopotential height
+43	0	16	198	MAXREF	1000 m above ground	unknown
+44	0	16	195	REFD	263 K level	Derived radar reflectivity
+45	0	7	199	MXUPHL	5000-2000 m above ground	unknown
+46	0	7	200	MNUPHL	5000-2000 m above ground	unknown
+47	0	7	199	MXUPHL	2000-0 m above ground	unknown
+48	0	7	200	MNUPHL	2000-0 m above ground	unknown
+49	0	7	199	MXUPHL	3000-0 m above ground	unknown
+50	0	7	200	MNUPHL	3000-0 m above ground	unknown
+51	0	2	12	RELV	2000-0 m above ground	Time-maximum vorticity (relative)
+52	0	2	12	RELV	1000-0 m above ground	Time-maximum vorticity (relative)
+53	0	1	31	HAIL	entire atmosphere	Hail
+54	0	1	31	HAIL	0.1 sigma level	Hail
+55	0	1	31	HAIL	surface	Hail
+56	0	1	74	TCOLG	entire atmosphere (considered as a single layer)	unknown
+57	0	17	0	LTNGSD	1 m above ground	unknown
+58	0	17	0	LTNGSD	2 m above ground	unknown
+59	0	17	192	LTNG	entire atmosphere	Lightning
+60	0	2	2	UGRD	80 m above ground	U component of wind
+61	0	2	3	VGRD	80 m above ground	V component of wind
+62	0	3	0	PRES	surface	Surface pressure
+63	0	3	5	HGT	surface	Orography
+64	0	0	0	TMP	surface	Temperature
+65	0	1	29	ASNOW	surface	unknown
+66	2	0	194	MSTAV	0 m underground	Moisture availability
+67	2	0	13	CNWAT	surface	Plant canopy surface water
+68	0	1	13	WEASD	surface	Water equivalent of accumulated snow depth (deprecated)
+69	0	1	42	SNOWC	surface	Snow cover
+70	0	1	11	SNOD	surface	Snow depth
+71	0	0	0	TMP	2 m above ground	2 metre temperature
+72	0	0	2	POT	2 m above ground	Potential temperature
+73	0	1	0	SPFH	2 m above ground	2 metre specific humidity
+74	0	0	6	DPT	2 m above ground	2 metre dewpoint temperature
+75	0	1	1	RH	2 m above ground	2 metre relative humidity
+76	0	20	0	MASSDEN	8 m above ground	unknown
+77	0	2	2	UGRD	10 m above ground	10 metre U wind component
+78	0	2	3	VGRD	10 m above ground	10 metre V wind component
+79	0	2	1	WIND	10 m above ground	Time-maximum 10 metre wind speed
+80	0	2	222	MAXUW	10 m above ground	unknown
+81	0	2	223	MAXVW	10 m above ground	unknown
+82	0	1	39	CPOFP	surface	Percent frozen precipitation
+83	0	1	7	PRATE	surface	Precipitation rate
+84	0	1	8	APCP	surface	Total Precipitation
+85	0	1	13	WEASD	surface	Water equivalent of accumulated snow depth (deprecated)
+86	0	1	227	FROZR	surface	unknown
+87	0	1	225	FRZR	surface	Freezing Rain
+88	1	0	6	SSRUN	surface	Storm surface runoff
+89	1	0	5	BGRUN	surface	Baseflow-groundwater runoff
+90	0	1	36	CSNOW	surface	Categorical snow
+91	0	1	35	CICEP	surface	Categorical ice pellets
+92	0	1	34	CFRZR	surface	Categorical freezing rain
+93	0	1	33	CRAIN	surface	Categorical rain
+94	2	0	1	SFCR	surface	Forecast surface roughness
+95	0	2	30	FRICV	surface	Frictional velocity
+96	0	0	11	SHTFL	surface	Instantaneous surface sensible heat net flux
+97	0	0	10	LHTFL	surface	Surface latent heat net flux
+98	2	0	4	VEG	surface	Vegetation
+99	2	0	231	VEGMIN	surface	unknown
+100	2	0	232	VEGMAX	surface	unknown
+101	0	7	198	LAI	surface	Leaf Area Index
+102	2	0	10	GFLUX	surface	Ground heat flux
+103	2	0	198	VGTYP	surface	Vegetation Type
+104	0	7	10	LFTX	500-1000 mb	Surface lifted index
+105	0	7	6	CAPE	surface	Convective available potential energy
+106	0	7	7	CIN	surface	Convective inhibition
+107	0	1	3	PWAT	entire atmosphere (considered as a single layer)	Precipitable water
+108	0	20	102	AOTK	entire atmosphere (considered as a single layer)	unknown
+109	0	20	1	COLMD	entire atmosphere (considered as a single layer)	unknown
+110	0	1	69	TCOLW	entire atmosphere	unknown
+111	0	1	70	TCOLI	entire atmosphere	unknown
+112	0	6	1	TCDC	boundary layer cloud layer	Total Cloud Cover
+113	0	6	3	LCDC	low cloud layer	Low cloud cover
+114	0	6	4	MCDC	middle cloud layer	Medium cloud cover
+115	0	6	5	HCDC	high cloud layer	High cloud cover
+116	0	6	1	TCDC	entire atmosphere	Total Cloud Cover
+117	0	3	5	HGT	cloud ceiling	Geopotential height
+118	0	3	5	HGT	cloud base	Geopotential height
+119	0	3	0	PRES	cloud base	Pressure at cloud base
+120	0	3	0	PRES	cloud top	Pressure
+121	0	3	5	HGT	cloud top	Geopotential height
+122	0	5	4	ULWRF	top of atmosphere	unknown
+123	0	4	7	DSWRF	surface	Surface downward short-wave radiation flux
+124	0	5	3	DLWRF	surface	Surface downward long-wave radiation flux
+125	0	4	8	USWRF	surface	Surface upward short-wave radiation flux
+126	0	5	4	ULWRF	surface	Surface upward long-wave radiation flux
+127	0	4	199	CFNSF	surface	Cloud Forcing Net Solar Flux
+128	0	4	200	VBDSF	surface	Visible Beam Downward Solar Flux
+129	0	4	201	VDDSF	surface	Visible Diffuse Downward Solar Flux
+130	0	4	8	USWRF	top of atmosphere	unknown
+131	0	7	8	HLCY	3000-0 m above ground	Storm relative helicity
+132	0	7	8	HLCY	1000-0 m above ground	Storm relative helicity
+133	0	2	27	USTM	0-6000 m above ground	U-component storm motion
+134	0	2	28	VSTM	0-6000 m above ground	V-component storm motion
+135	0	2	15	VUCSH	0-1000 m above ground	Vertical u-component shear
+136	0	2	16	VVCSH	0-1000 m above ground	Vertical v-component shear
+137	0	2	15	VUCSH	0-6000 m above ground	Vertical u-component shear
+138	0	2	16	VVCSH	0-6000 m above ground	Vertical v-component shear
+139	0	3	5	HGT	0C isotherm	Geopotential height
+140	0	1	1	RH	0C isotherm	Relative humidity
+141	0	3	0	PRES	0C isotherm	Pressure
+142	0	3	5	HGT	highest tropospheric freezing level	Geopotential height
+143	0	1	1	RH	highest tropospheric freezing level	Relative humidity
+144	0	3	0	PRES	highest tropospheric freezing level	Pressure
+145	0	3	5	HGT	263 K level	Geopotential height
+146	0	3	5	HGT	253 K level	Geopotential height
+147	0	7	193	4LFTX	180-0 mb above ground	Best (4-layer) lifted index
+148	0	7	6	CAPE	180-0 mb above ground	Convective available potential energy
+149	0	7	7	CIN	180-0 mb above ground	Convective inhibition
+150	0	3	18	HPBL	surface	Boundary layer height
+151	0	3	5	HGT	level of adiabatic condensation from sfc	Geopotential height
+152	0	7	6	CAPE	90-0 mb above ground	Convective available potential energy
+153	0	7	7	CIN	90-0 mb above ground	Convective inhibition
+154	0	7	6	CAPE	255-0 mb above ground	Convective available potential energy
+155	0	7	7	CIN	255-0 mb above ground	Convective inhibition
+156	0	3	5	HGT	equilibrium level	Geopotential height
+157	0	3	200	PLPL	255-0 mb above ground	Pressure of level from which parcel was lifted
+158	0	7	6	CAPE	0-3000 m above ground	Convective available potential energy
+159	0	3	5	HGT	level of free convection	Geopotential height
+160	0	7	204	EFHL	surface	unknown
+161	0	7	206	CANGLE	0-500 m above ground	unknown
+162	0	3	205	LAYTH	261 K level - 256 K level	Layer Thickness
+163	0	7	205	ESP	0-3000 m above ground	unknown
+164	0	1	242	RHPW	entire atmosphere	unknown
+165	2	0	0	LAND	surface	Land-sea mask
+166	10	2	0	ICEC	surface	Sea ice area fraction
+167	3	192	1	SBT123	top of atmosphere	Simulated Brightness Temperature for GOES 12, Channel 3
+168	3	192	2	SBT124	top of atmosphere	Simulated Brightness Temperature for GOES 12, Channel 4
+169	3	192	7	SBT113	top of atmosphere	Simulated Brightness Temperature for GOES 11, Channel 3
+170	3	192	8	SBT114	top of atmosphere	Simulated Brightness Temperature for GOES 11, Channel 4
