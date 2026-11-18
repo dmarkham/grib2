@@ -76,7 +76,9 @@ func ParameterCategoryName(discipline, category uint8) string {
 }
 
 // ParameterName returns the human-readable name for a parameter given
-// discipline, category, and number (Table 4.2.x.x).
+// discipline, category, and number (Table 4.2.x.x). It knows the WMO
+// parameters only; ParameterNameFor also names the ones a centre defines
+// itself.
 func ParameterName(discipline, category, number uint8) string {
 	key := uint32(discipline)<<16 | uint32(category)<<8 | uint32(number)
 	if name, ok := parameterTable[key]; ok {
@@ -93,6 +95,51 @@ func ParameterUnit(discipline, category, number uint8) string {
 		return unit
 	}
 	return "unknown"
+}
+
+// ncepCentre is the originating centre code of the US National Centers for
+// Environmental Prediction (Common Code Table C-11).
+const ncepCentre = 7
+
+// localUseParameter reports whether a parameter is in the part of Code
+// Table 4.2 reserved for local use, where each centre defines its own
+// parameters: category or number 192 to 254.
+func localUseParameter(category, number uint8) bool {
+	return (category >= 192 && category != 255) || (number >= 192 && number != 255)
+}
+
+// ParameterNameFor returns the name of a parameter in a message from the
+// given originating centre (Section1.Centre).
+//
+// Code Table 4.2 reserves categories and numbers 192 to 254 for local use:
+// what such a parameter is depends on who made the message. NCEP's (centre
+// 7), which HRRR, NAM, RAP, GFS and the other NCEP models use for fields
+// such as composite reflectivity and lightning, are named from NCEP's own
+// table. A local parameter of another centre, or one NCEP's table does not
+// define, gives "Unknown parameter (d, c, n)". Every other parameter is a
+// WMO one and gets the name ParameterName gives.
+func ParameterNameFor(centre uint16, discipline, category, number uint8) string {
+	if centre == ncepCentre && localUseParameter(category, number) {
+		key := uint32(discipline)<<16 | uint32(category)<<8 | uint32(number)
+		if name, ok := ncepLocalParameterTable[key]; ok {
+			return name
+		}
+	}
+	return ParameterName(discipline, category, number)
+}
+
+// ParameterUnitFor returns the unit of a parameter in a message from the
+// given originating centre, like ParameterNameFor. Units of NCEP's local
+// parameters are written as NCEP's tools write them ("kg/m^2", and "-" for
+// none); an unknown parameter gives "unknown".
+func ParameterUnitFor(centre uint16, discipline, category, number uint8) string {
+	if centre == ncepCentre && localUseParameter(category, number) {
+		key := uint32(discipline)<<16 | uint32(category)<<8 | uint32(number)
+		if unit, ok := ncepLocalParameterUnitTable[key]; ok {
+			return unit
+		}
+	}
+	return ParameterUnit(discipline, category, number)
 }
 
 // SurfaceTypeName returns the human-readable name for a fixed surface type

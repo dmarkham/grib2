@@ -71,7 +71,11 @@ func TestSampler_BitIdenticalToBilinearValue(t *testing.T) {
 			continue
 		}
 		templates[typeName(f.Section3.Template)]++
-		for k := 0; k < 40; k++ {
+		n := 40
+		if len(values) > 500000 {
+			n = 6 // BilinearValue unpacks the whole field on every call
+		}
+		for k := 0; k < n; k++ {
 			// Jitter around real grid points, with some far outside.
 			idx := r.Intn(len(lats))
 			lat := lats[idx] + (r.Float64()-0.5)*2
@@ -104,6 +108,10 @@ func typeName(v any) string {
 		return "3.1"
 	case Template340:
 		return "3.40"
+	case Template310:
+		return "3.10"
+	case Template320:
+		return "3.20"
 	case Template330:
 		return "3.30"
 	}
@@ -166,9 +174,9 @@ func TestNewSampler_Unsupported(t *testing.T) {
 	if err == nil {
 		t.Fatal("reduced Gaussian accepted")
 	}
-	_, err = NewSampler(&Field{Section3: Section3{Template: Template310{}}})
+	_, err = NewSampler(&Field{Section3: Section3{Template: Template390{}}})
 	if err == nil {
-		t.Fatal("Mercator accepted")
+		t.Fatal("space view accepted")
 	}
 }
 

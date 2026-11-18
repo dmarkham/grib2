@@ -54,8 +54,10 @@ The legacy template numbers 5.40000 and 5.41000 are decoded as 5.40 and 5.41.
 - **Bitmap support** -- automatic expansion of bitmap-masked fields (NaN for missing points), including bit-map indicator 254 (bitmap defined earlier in the message); predefined bitmaps (1-253) return an error
 - **Scanning mode reordering** -- all 16 scanning mode combinations normalized to canonical west-to-east, north-to-south order. For projected grids the first grid point is the first point in data order (WMO); eccodes instead always treats it as the south-west corner, so the two agree for the usual scanning mode 0x40
 - **Grid coordinates** -- `GridCoordinates()` returns lat/lon arrays (longitudes in [0, 360)) for all supported grid types, including projected grids (Lambert on a sphere or oblate spheroid, Polar Stereographic, Mercator, Space View), every shape of the Earth in Code Table 3.2, and the basic angle / subdivisions of Templates 3.0, 3.1 and 3.40. Inconsistent grid descriptions return an error
-- **Nearest-neighbour lookup** -- `NearestValue(lat, lon)` with O(1) direct index computation for regular, rotated, regular Gaussian and Lambert conformal grids, haversine search over every point for others
-- **Bilinear interpolation** -- `BilinearValue(lat, lon)` for smooth value estimation between grid points on regular lat/lon, rotated lat/lon, regular Gaussian and Lambert conformal grids (HRRR, NAM), across the 0/360 seam on grids that go all the way round. On a Lambert grid the interpolation is bilinear in the projection plane, where the grid is square
+- **Nearest-neighbour lookup** -- `NearestValue(lat, lon)` with O(1) direct index computation for regular, rotated, regular Gaussian, Mercator, polar stereographic and Lambert conformal grids, haversine search over every point for others
+- **Bilinear interpolation** -- `BilinearValue(lat, lon)` for smooth value estimation between grid points on regular lat/lon, rotated lat/lon, regular Gaussian, Mercator, polar stereographic (HRRR-Alaska) and Lambert conformal grids (HRRR, NAM), across the 0/360 seam on grids that go all the way round. On a projected grid the interpolation is bilinear in the projection plane, where the grid is square
+- **Wind rotation** -- `NewWindRotation(field)` turns u and v components stored relative to the grid (HRRR, NAM, RDPS, HRDPS) to true east and north, on rotated lat/lon, Mercator, polar stereographic and Lambert conformal grids
+- **NCEP local parameters** -- `ParameterNameFor(centre, ...)` names the parameters NCEP defines in the local-use part of Table 4.2 (composite reflectivity, lightning, categorical precipitation types, ...)
 - **Code table lookups** -- human-readable names for disciplines, centres, parameters, surface types, and all template numbers
 - **Multi-message files** -- `Decoder` reads files containing any number of concatenated GRIB2 messages and fields (messages repeating from Section 2, 3 or 4), skips padding and junk between messages, and skips GRIB1 messages with an `ErrNotEdition2` error. `io.EOF` means a clean end; a cut-off message gives `ErrTruncated`
 - **Byte-perfect round-trips** -- `ReadMessage` followed by `WriteMessage` produces identical bytes
@@ -155,9 +157,34 @@ if !s.Matches(otherField) { /* different grid: build another Sampler */ }
 Measured on a rotated RDPS grid: about 0.2 µs per point, against roughly
 400 µs per `BilinearValue` call; `Weights` on HRRR's Lambert grid also
 takes about 0.2 µs. `Weights` reports `Outside` for points beyond the grid
-edge, where the result is clamped to the edge cell. On a Lambert grid it
-returns an error for the one place the projection cannot show: the pole the
-cone opens away from (the south pole for a northern hemisphere grid).
+edge, where the result is clamped to the edge cell. On a projected grid it
+returns an error for a place the projection cannot show: the pole a Lambert
+cone opens away from (the south pole for a northern hemisphere grid), the
+pole opposite the centre of a polar stereographic grid, and both poles on a
+Mercator grid.
+
+### Wind direction on projected and rotated grids
+
+HRRR, NAM, RDPS and many other models store u and v relative to their own
+grid, not to east and north (Flag Table 3.3 bit 5 says which). Speed is the
+same either way, but a direction worked out from grid-relative u and v is
+off by the angle between grid north and true north: up to 22.8° on HRRR,
+55° on HRRR-Alaska, and more on RDPS's rotated grid.
+
+```go
+rot, err := grib2.NewWindRotation(uField)  // from either component's grid
+s, _ := grib2.NewSampler(uField)
+w, _ := s.Weights(lat, lon)
+u, _ := w.Interpolate(uValues)
+v, _ := w.Interpolate(vValues)
+
+east, north := rot.ToEarth(u, v, lat, lon) // unchanged if already earth-relative
+speed := math.Hypot(east, north)
+from := math.Mod(math.Atan2(-east, -north)*180/math.Pi+360, 360) // direction the wind blows from
+
+rot.GridRelative()        // what the grid definition's flag says
+rot.GridNorth(lat, lon)   // degrees clockwise from true north to grid north
+```
 
 ### Write a GRIB2 file
 
@@ -269,12 +296,16 @@ Message
 |--------|-------------|
 | `Values() ([]float64, error)` | Unpack, apply bitmap, reorder by scanning mode |
 | `GridCoordinates() (lats, lons []float64, error)` | Lat/lon of every grid point in data order |
-| `NearestValue(lat, lon float64)` | Value at closest grid point (O(1) for regular and Lambert grids) |
+| `NearestValue(lat, lon float64)` | Value at closest grid point (O(1) for regular and projected grids) |
 | `BilinearValue(lat, lon float64)` | Bilinear interpolation from 4 surrounding points |
-| `NewSampler(f *Field) (*Sampler, error)` | Reusable bilinear locator for f's grid (3.0, 3.1, 3.30, regular 3.40) |
+| `NewSampler(f *Field) (*Sampler, error)` | Reusable bilinear locator for f's grid (3.0, 3.1, 3.10, 3.20, 3.30, regular 3.40) |
 | `(*Sampler).Weights(lat, lon float64)` | Four corner indices and fractions; apply to any field on the grid |
 | `(BilinearWeights).Interpolate(values)` | Bilinear value, bit-identical to `BilinearValue` |
 | `(BilinearWeights).NearestCorner()` | Index of the heaviest corner, for categorical fields |
+| `NewWindRotation(f *Field) (*WindRotation, error)` | Rotation of grid-relative u and v for f's grid |
+| `(*WindRotation).ToEarth(u, v, lat, lon float64)` | Eastward and northward components at a place |
+| `(*WindRotation).GridNorth(lat, lon float64)` | Direction of grid north, degrees clockwise from true north |
+| `(*WindRotation).GridRelative()` | Whether the grid definition flags u and v as grid-relative |
 
 ### Writing
 
@@ -297,6 +328,8 @@ Message
 | `CentreName(c uint16)` | Common Code Table C-11 |
 | `ParameterName(discipline, category, number uint8)` | Table 4.2.x.x |
 | `ParameterUnit(discipline, category, number uint8)` | Units for Table 4.2 |
+| `ParameterNameFor(centre uint16, discipline, category, number uint8)` | Table 4.2 plus the centre's local parameters (NCEP's are known) |
+| `ParameterUnitFor(centre uint16, discipline, category, number uint8)` | Units, including NCEP's local parameters |
 | `ParameterCategoryName(discipline, category uint8)` | Table 4.1.x |
 | `SurfaceTypeName(t uint8)` | Table 4.5 |
 | `GridDefinitionTemplateName(n uint16)` | Table 3.1 |
@@ -329,7 +362,9 @@ The test suite covers:
 - **Cross-validation against eccodes, with no eccodes needed**: `testdata/upstream/eccodes_reference.json` records what eccodes decodes for every field of every fixture (a fingerprint of every value, sampled points and coordinates, metadata, pv arrays, nearest-point answers), and the golden files in `testdata/upstream/encoded` are our encoders' output as eccodes decoded it (with Jasper and OpenJPEG). Every test runs from these committed files. Developers with eccodes built in `reference/eccodes-install` regenerate them with `GRIB2_WRITE_ECCODES_REFERENCE=1 go test -run TestEccodesReference_Write .`, and `TestEccodesReference_UpToDate` checks they still match eccodes. Fixtures derived from eccodes data and samples are made by `testdata/upstream/generate.sh`; libaec's CCSDS test vectors and golden JPEG2000 streams checked with OpenJPEG and Jasper are in `internal/*/testdata`
 - **Encode/decode round-trips**: pack values, unpack them, verify they match within quantization tolerance
 - **Grid coordinate validation**: lat/lon and their pairing with values compared against eccodes' for every grid type and scanning mode
-- **Lambert lookups against PROJ and real HRRR data**: `testdata/hrrr_cloud.grib2` is six cloud fields of NOAA's HRRR (1799x1059 points, 3 km). `testdata/reference/lambert_proj.json` records where PROJ puts points on every Lambert fixture's grid (`scripts/gen_lambert_reference.py` regenerates it with pyproj and eccodes' `grib_get`); the tests compare `Sampler.Weights` with it, check that every grid point gets the whole weight at its own coordinates, and that the direct `NearestValue` returns exactly what a search over every point returns
+- **Projected-grid lookups against PROJ and real HRRR data**: `testdata/hrrr_cloud.grib2` is six cloud fields of NOAA's HRRR (Lambert, 1799x1059 points, 3 km) and `testdata/hrrr_alaska_uv500.grib2` two wind fields of HRRR-Alaska (polar stereographic, 1299x919). `testdata/reference/projected_grids_proj.json` records where PROJ puts points on every Mercator, polar stereographic and Lambert fixture's grid, and PROJ's meridian convergence there (`scripts/gen_projection_reference.py` regenerates it with pyproj and eccodes' `grib_get`); the tests compare `Sampler.Weights` and `WindRotation.GridNorth` with it, check that every grid point gets the whole weight at its own coordinates, and that the direct `NearestValue` returns exactly what a search over every point returns
+- **Wind rotation on real winds**: the 500 mb winds of HRRR and HRRR-Alaska (grid-relative), rotated, are compared with the GFS analysis for the same time (earth-relative): rotating cuts the rms direction difference from 13.1° to 6.0° on HRRR and from 33.4° to 9.0° on HRRR-Alaska, and rotating the wrong way doubles it
+- **NCEP parameter names**: `testdata/reference/hrrr_wrfsfc_inventory.tsv` lists the parameters of all 170 messages of an HRRR surface file with wgrib2's and eccodes' names; `ParameterNameFor` names all but one, which NCEP's own table does not define (`scripts/gen_ncep_local.py` regenerates the table from wgrib2's)
 - **Section-level parsing**: individual tests for all section readers and writers (Sections 0-8)
 - **Template coverage**: dedicated tests for all grid, product, and data representation templates
 - **Fuzz testing**: fuzz targets for the message stream (with a rewrite-stability check), each unpacker and their template parameters, the JPEG2000 and AEC codecs
@@ -340,7 +375,7 @@ The test suite covers:
 - **Pure Go, zero CGo** -- no overhead from C interop, straightforward cross-compilation, no system library requirements
 - **Fast paths** for common bit widths (8, 16, 32-bit aligned simple packing)
 - **Streaming decoder** -- reads messages one at a time via `Decoder`, suitable for large multi-message files
-- **O(1) nearest-neighbour** for regular lat/lon, rotated lat/lon, regular Gaussian and Lambert conformal grids (direct index computation instead of brute-force search)
+- **O(1) nearest-neighbour** for regular lat/lon, rotated lat/lon, regular Gaussian, Mercator, polar stereographic and Lambert conformal grids (direct index computation instead of brute-force search)
 - **Fuzz-tested and hardened** -- safe to use on untrusted input; allocation caps and bounds checks prevent resource exhaustion
 
 ## License

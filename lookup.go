@@ -10,10 +10,11 @@ import (
 // and the actual lat/lon of the nearest point.
 //
 // For regular lat/lon (Template30), rotated lat/lon (Template31), regular
-// Gaussian (Template340 with Ni set) and Lambert conformal grids
-// (Template330) the four points around the target are found directly and
-// the closest by great-circle distance is returned. For all other grid
-// types, a brute-force search over GridCoordinates is performed.
+// Gaussian (Template340 with Ni set), Mercator (Template310), polar
+// stereographic (Template320) and Lambert conformal grids (Template330) the
+// four points around the target are found directly and the closest by
+// great-circle distance is returned. For all other grid types, a
+// brute-force search over GridCoordinates is performed.
 func (f *Field) NearestValue(lat, lon float64) (value float64, idx int, nearLat, nearLon float64, err error) {
 	values, err := f.Values()
 	if err != nil {
@@ -54,8 +55,8 @@ func nearestIndex(f *Field, lat, lon float64) (idx int, nearLat, nearLon float64
 			return la, coordNormaliseLon(lo)
 		})
 		return idx, nearLat, nearLon, nil
-	case Template330:
-		g, err := lambertGrid(tmpl)
+	case Template310, Template320, Template330:
+		g, _, err := projectedGridOf(tmpl)
 		if err != nil {
 			return 0, 0, 0, fmt.Errorf("grib2: NearestValue: %w", err)
 		}
@@ -82,11 +83,12 @@ func isReduced(tmpl GridDefinitionTemplate) bool {
 // BilinearValue returns an interpolated value at the given latitude and
 // longitude using bilinear interpolation from the 4 surrounding grid points.
 // It works for regular lat/lon (Template30), rotated lat/lon (Template31),
-// regular Gaussian (Template340 with Ni set) and Lambert conformal
-// (Template330) grids. On grids that go all the way round in longitude the
-// cell between the last and the first column is interpolated across the
-// 0/360 seam. On a Lambert grid the interpolation is bilinear in the
-// projection plane, where the grid is square.
+// regular Gaussian (Template340 with Ni set), Mercator (Template310), polar
+// stereographic (Template320) and Lambert conformal (Template330) grids. On
+// grids that go all the way round in longitude the cell between the last
+// and the first column is interpolated across the 0/360 seam. On a
+// projected grid the interpolation is bilinear in the projection plane,
+// where the grid is square.
 // Returns an error for other grids, where bilinear interpolation does not
 // apply cleanly.
 func (f *Field) BilinearValue(lat, lon float64) (float64, error) {
@@ -106,7 +108,7 @@ func (f *Field) BilinearValue(lat, lon float64) (float64, error) {
 }
 
 // bilinearWeights locates (lat, lon) on a regular, rotated, regular
-// Gaussian or Lambert conformal grid.
+// Gaussian, Mercator, polar stereographic or Lambert conformal grid.
 func bilinearWeights(tmpl GridDefinitionTemplate) (func(lat, lon float64) (BilinearWeights, error), error) {
 	switch t := tmpl.(type) {
 	case Template30, Template340:
@@ -128,8 +130,8 @@ func bilinearWeights(tmpl GridDefinitionTemplate) (func(lat, lon float64) (Bilin
 			rLat, rLon := coordRotate(lat, lon, angle, spLat, spLon)
 			return g.weights(rLat, rLon)
 		}, nil
-	case Template330:
-		g, err := lambertGrid(t)
+	case Template310, Template320, Template330:
+		g, _, err := projectedGridOf(t)
 		if err != nil {
 			return nil, err
 		}
