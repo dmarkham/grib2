@@ -70,52 +70,193 @@ func scanFlags(mode uint8) (iNeg, jPos, jConsec bool) {
 	return
 }
 
-// projectedCanonical lays out a projected grid in canonical order. point
-// maps an offset (x, y) in metres from the first grid point to geographic
-// coordinates. The first grid point is the first point in data order, so
-// the i axis runs west (-x) when iScansNegatively and the j axis runs north
-// (+y) when jScansPositively. The order of consecutive points (0x20) and
-// alternating rows (0x10) only affect the data order, not where the points
-// are.
-func projectedCanonical(nx, ny int, dx, dy float64, scanMode uint8, point func(x, y float64) (lat, lon float64, err error)) ([]float64, []float64, error) {
+// projectedGrid is a grid whose points are equally spaced in the plane of a
+// map projection. Offsets (x, y) are in metres from the first grid point,
+// which is the first point in data order, so the i axis runs west (-x) when
+// iScansNegatively and the j axis runs north (+y) when jScansPositively. The
+// order of consecutive points (0x20) and alternating rows (0x10) only affect
+// the data order, not where the points are.
+type projectedGrid struct {
+	nx, ny     int
+	dx, dy     float64 // grid lengths in metres, > 0
+	iNeg, jPos bool
+	// inverse maps an offset from the first grid point to geographic
+	// coordinates in degrees.
+	inverse func(x, y float64) (lat, lon float64, err error)
+	// forward maps geographic coordinates in degrees to an offset from the
+	// first grid point. ok is false for a point the projection cannot place
+	// (the pole a Lambert cone opens away from). nil when the projection has
+	// no forward mapping yet.
+	forward func(lat, lon float64) (x, y float64, ok bool)
+	// singleValued is true when no two points of the grid's rectangle share
+	// a geographic position, so a point's cell in the plane is also where it
+	// is on the Earth.
+	singleValued bool
+}
+
+func newProjectedGrid(nx, ny int, dx, dy float64, scanMode uint8, inverse func(x, y float64) (lat, lon float64, err error)) (*projectedGrid, error) {
 	if nx <= 0 || ny <= 0 || nx == missingUint32 || ny == missingUint32 {
-		return nil, nil, fmt.Errorf("grib2: invalid grid dimensions Nx=%d, Ny=%d", nx, ny)
+		return nil, fmt.Errorf("grib2: invalid grid dimensions Nx=%d, Ny=%d", nx, ny)
 	}
 	if dx <= 0 || dy <= 0 {
-		return nil, nil, fmt.Errorf("grib2: invalid grid lengths Dx=%v, Dy=%v", dx, dy)
+		return nil, fmt.Errorf("grib2: invalid grid lengths Dx=%v, Dy=%v", dx, dy)
 	}
 	iNeg, jPos, _ := scanFlags(scanMode)
+	return &projectedGrid{nx: nx, ny: ny, dx: dx, dy: dy, iNeg: iNeg, jPos: jPos, inverse: inverse}, nil
+}
+
+// offset returns the offset in metres from the first grid point of the
+// point in canonical row and column.
+func (g *projectedGrid) offset(row, col int) (x, y float64) {
+	i, j := col, row // counted in scanning order
 	sx, sy := 1.0, -1.0
-	if iNeg {
-		sx = -1
+	if g.iNeg {
+		i, sx = g.nx-1-col, -1
 	}
-	if jPos {
-		sy = 1
+	if g.jPos {
+		j, sy = g.ny-1-row, 1
 	}
-	lats := make([]float64, nx*ny)
-	lons := make([]float64, nx*ny)
-	for j := 0; j < ny; j++ { // j and i count in scanning order
-		row := j
-		if jPos {
-			row = ny - 1 - j
+	return sx * float64(i) * g.dx, sy * float64(j) * g.dy
+}
+
+// bounds returns the rectangle the grid covers, as offsets from the first
+// grid point.
+func (g *projectedGrid) bounds() (xMin, xMax, yMin, yMax float64) {
+	xMin, yMax = g.offset(0, 0)
+	xMax, yMin = g.offset(g.ny-1, g.nx-1)
+	return
+}
+
+// point returns the geographic coordinates of the point in canonical row
+// and column, with the longitude in [0, 360).
+func (g *projectedGrid) point(row, col int) (lat, lon float64, err error) {
+	lat, lon, err = g.inverse(g.offset(row, col))
+	if err != nil {
+		return 0, 0, err
+	}
+	if math.IsNaN(lat) || math.IsNaN(lon) || math.IsInf(lat, 0) || math.IsInf(lon, 0) {
+		i, j := col, row
+		if g.iNeg {
+			i = g.nx - 1 - col
 		}
-		for i := 0; i < nx; i++ {
-			col := i
-			if iNeg {
-				col = nx - 1 - i
-			}
-			lat, lon, err := point(sx*float64(i)*dx, sy*float64(j)*dy)
+		if g.jPos {
+			j = g.ny - 1 - row
+		}
+		return 0, 0, fmt.Errorf("grib2: grid point (%d, %d) cannot be projected", i, j)
+	}
+	return lat, coordNormaliseLon(lon), nil
+}
+
+// coords returns the canonical coordinates of every point.
+func (g *projectedGrid) coords() ([]float64, []float64, error) {
+	lats := make([]float64, g.nx*g.ny)
+	lons := make([]float64, g.nx*g.ny)
+	for row := 0; row < g.ny; row++ {
+		for col := 0; col < g.nx; col++ {
+			lat, lon, err := g.point(row, col)
 			if err != nil {
 				return nil, nil, err
 			}
-			if math.IsNaN(lat) || math.IsNaN(lon) || math.IsInf(lat, 0) || math.IsInf(lon, 0) {
-				return nil, nil, fmt.Errorf("grib2: grid point (%d, %d) cannot be projected", i, j)
-			}
-			lats[row*nx+col] = lat
-			lons[row*nx+col] = coordNormaliseLon(lon)
+			lats[row*g.nx+col] = lat
+			lons[row*g.nx+col] = lon
 		}
 	}
 	return lats, lons, nil
+}
+
+// frac returns the fractional canonical column and row of (lat, lon): 0 at
+// the western column and the northern row. ok is false when the point has
+// no position in the projection plane.
+func (g *projectedGrid) frac(lat, lon float64) (fi, fj float64, ok bool) {
+	x, y, ok := g.forward(lat, lon)
+	if !ok {
+		return 0, 0, false
+	}
+	xMin, _, _, yMax := g.bounds()
+	fi, fj = (x-xMin)/g.dx, (yMax-y)/g.dy
+	if math.IsNaN(fi) || math.IsNaN(fj) {
+		return 0, 0, false
+	}
+	return fi, fj, true
+}
+
+// weights returns the bilinear weights of the cell holding (lat, lon).
+// The interpolation is bilinear in the projection plane, where the grid is
+// square, which is what the model's own grid space is.
+func (g *projectedGrid) weights(lat, lon float64) (BilinearWeights, error) {
+	if g.nx < 2 || g.ny < 2 {
+		return BilinearWeights{}, fmt.Errorf("grib2: grid too small for bilinear interpolation: Nx=%d, Ny=%d", g.nx, g.ny)
+	}
+	fi, fj, ok := g.frac(lat, lon)
+	if !ok {
+		return BilinearWeights{}, fmt.Errorf("grib2: point (%v, %v) has no position on the projected grid", lat, lon)
+	}
+	// A point far outside the grid clamps to the edge cell whatever its
+	// distance; limiting it first keeps the index arithmetic in range.
+	fi = math.Max(-1, math.Min(fi, float64(g.nx)))
+	fj = math.Max(-1, math.Min(fj, float64(g.ny)))
+	return cornerWeights(fi, fj, g.nx, g.ny), nil
+}
+
+// nearest returns the canonical index of the grid point closest (great
+// circle) to (lat, lon). A point inside the grid is closest to one of the
+// four corners of its cell, because a conformal projection keeps the cells
+// square on the Earth; for a point outside, the closest grid point is on
+// the grid's boundary. Distances, and so the choice on ties, are computed
+// exactly as the search over every point does.
+func (g *projectedGrid) nearest(lat, lon float64) (idx int, nearLat, nearLon float64, err error) {
+	best := math.MaxFloat64
+	latRad, lonRad := deg2rad(lat), deg2rad(lon)
+	try := func(row, col int) error {
+		cLat, cLon, err := g.point(row, col)
+		if err != nil {
+			return err
+		}
+		k := row*g.nx + col
+		d := haversineRad(latRad, lonRad, deg2rad(cLat), deg2rad(cLon))
+		if d < best || (d == best && k < idx) {
+			best, idx, nearLat, nearLon = d, k, cLat, cLon
+		}
+		return nil
+	}
+	fi, fj, ok := g.frac(lat, lon)
+	if ok && fi >= 0 && fj >= 0 && fi <= float64(g.nx-1) && fj <= float64(g.ny-1) {
+		col, row := int(math.Floor(fi)), int(math.Floor(fj))
+		for _, c := range [4][2]int{{row, col}, {row, col + 1}, {row + 1, col}, {row + 1, col + 1}} {
+			if err := try(clamp(c[0], 0, g.ny-1), clamp(c[1], 0, g.nx-1)); err != nil {
+				return 0, 0, 0, err
+			}
+		}
+		return idx, nearLat, nearLon, nil
+	}
+	for col := 0; col < g.nx; col++ {
+		if err := try(0, col); err != nil {
+			return 0, 0, 0, err
+		}
+		if err := try(g.ny-1, col); err != nil {
+			return 0, 0, 0, err
+		}
+	}
+	for row := 0; row < g.ny; row++ {
+		if err := try(row, 0); err != nil {
+			return 0, 0, 0, err
+		}
+		if err := try(row, g.nx-1); err != nil {
+			return 0, 0, 0, err
+		}
+	}
+	return idx, nearLat, nearLon, nil
+}
+
+// projectedCanonical lays out a projected grid in canonical order. point
+// maps an offset (x, y) in metres from the first grid point to geographic
+// coordinates.
+func projectedCanonical(nx, ny int, dx, dy float64, scanMode uint8, point func(x, y float64) (lat, lon float64, err error)) ([]float64, []float64, error) {
+	g, err := newProjectedGrid(nx, ny, dx, dy, scanMode, point)
+	if err != nil {
+		return nil, nil, err
+	}
+	return g.coords()
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +528,16 @@ func gridCoordsPolarStereographic(t Template320) ([]float64, []float64, error) {
 // ---------------------------------------------------------------------------
 
 func gridCoordsLambert(t Template330) ([]float64, []float64, error) {
+	g, err := lambertGrid(t)
+	if err != nil {
+		return nil, nil, err
+	}
+	return g.coords()
+}
+
+// lambertGrid returns the geometry of a Lambert conformal grid, with the
+// projection in both directions.
+func lambertGrid(t Template330) (*projectedGrid, error) {
 	const deg2rad = math.Pi / 180.0
 	const rad2deg = 180.0 / math.Pi
 	const epsilon = 1e-10
@@ -400,7 +551,7 @@ func gridCoordsLambert(t Template330) ([]float64, []float64, error) {
 
 	if math.Abs(latin1+latin2) < epsilon {
 		// eccodes: standard parallels cannot be equal and on opposite sides of the equator.
-		return nil, nil, fmt.Errorf("grib2: Lambert: standard parallels %v and %v are on opposite sides of the equator",
+		return nil, fmt.Errorf("grib2: Lambert: standard parallels %v and %v are on opposite sides of the equator",
 			latin1*rad2deg, latin2*rad2deg)
 	}
 
@@ -409,7 +560,7 @@ func gridCoordsLambert(t Template330) ([]float64, []float64, error) {
 		t.ScaleFactorOfEarthMajorAxis, t.ScaledValueOfEarthMajorAxis,
 		t.ScaleFactorOfEarthMinorAxis, t.ScaledValueOfEarthMinorAxis)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// Snyder's ellipsoidal formulas (eccodes LambertConformal::init_oblate);
@@ -433,17 +584,25 @@ func gridCoordsLambert(t Template330) ([]float64, []float64, error) {
 	F := mOf(latin1) / (ns * math.Pow(tOf(latin1), ns))
 	rh := major * F * math.Pow(tOf(laD), ns)
 
-	var rh1 float64
-	if math.Abs(math.Abs(lat1)-math.Pi/2) > epsilon {
-		rh1 = major * F * math.Pow(tOf(lat1), ns)
-	} else if lat1*ns <= 0 {
-		return nil, nil, fmt.Errorf("grib2: Lambert: first grid point cannot be projected")
+	// radius returns the signed distance from the cone's apex of the
+	// parallel at phi: 0 at the pole the cone converges on; the other pole
+	// is at infinity (ok false).
+	radius := func(phi float64) (r float64, ok bool) {
+		if math.Abs(math.Abs(phi)-math.Pi/2) > epsilon {
+			return major * F * math.Pow(tOf(phi), ns), true
+		}
+		return 0, phi*ns > 0
+	}
+
+	rh1, ok := radius(lat1)
+	if !ok {
+		return nil, fmt.Errorf("grib2: Lambert: first grid point cannot be projected")
 	}
 	theta := ns * coordAdjustLonRadians(lon1-loV)
 	x0 := rh1 * math.Sin(theta)
 	y0 := rh - rh1*math.Cos(theta)
 
-	return projectedCanonical(int(t.Nx), int(t.Ny), float64(t.Dx)*1e-3, float64(t.Dy)*1e-3, t.ScanningMode,
+	g, err := newProjectedGrid(int(t.Nx), int(t.Ny), float64(t.Dx)*1e-3, float64(t.Dy)*1e-3, t.ScanningMode,
 		func(x, y float64) (float64, float64, error) {
 			px := x + x0
 			py := rh - (y + y0)
@@ -462,6 +621,61 @@ func gridCoordsLambert(t Template330) ([]float64, []float64, error) {
 			}
 			return lat * rad2deg, coordAdjustLonRadians(th/ns+loV) * rad2deg, nil
 		})
+	if err != nil {
+		return nil, err
+	}
+
+	// Forward: Snyder (15-1), (14-1), (14-2) on a sphere and (15-7) on a
+	// spheroid, the exact inverse of the function above.
+	g.forward = func(lat, lon float64) (float64, float64, bool) {
+		if !(lat >= -90 && lat <= 90) || math.IsNaN(lon) || math.IsInf(lon, 0) {
+			return 0, 0, false
+		}
+		r, ok := radius(lat * deg2rad)
+		if !ok {
+			return 0, 0, false
+		}
+		// The longitude may be any number of turns round.
+		th := ns * math.Remainder(lon*deg2rad-loV, 2*math.Pi)
+		x := r*math.Sin(th) - x0
+		y := rh - r*math.Cos(th) - y0
+		if math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) {
+			return 0, 0, false
+		}
+		return x, y, true
+	}
+
+	// The plane holds the Earth once only between the two images of the
+	// meridian opposite LoV, which leave the apex at angles of +-ns*pi from
+	// the central meridian. Beyond them (the gap of the unrolled cone) the
+	// inverse projection repeats places that also lie elsewhere in the
+	// plane. A grid is single valued when its rectangle stays clear of the
+	// gap: it does not meet the half-line from the apex that runs through
+	// the middle of the gap, and none of its corners is in the gap. (The
+	// angle from the apex is then continuous over the rectangle and takes
+	// its extremes at corners.) Every real grid is like this; one that is
+	// not has the pole inside it.
+	xMin, xMax, yMin, yMax := g.bounds()
+	apexX, apexY := -x0, rh-y0
+	// The central meridian leaves the apex towards -y when the cone
+	// converges on the north pole (ns > 0), so the gap's middle runs
+	// towards +y; with ns < 0 both are the other way up.
+	meetsGapAxis := apexX >= xMin && apexX <= xMax && yMax >= apexY
+	if ns < 0 {
+		meetsGapAxis = apexX >= xMin && apexX <= xMax && yMin <= apexY
+	}
+	g.singleValued = !meetsGapAxis
+	limit := math.Abs(ns) * math.Pi * (1 - 1e-12)
+	for _, c := range [4][2]float64{{xMin, yMin}, {xMin, yMax}, {xMax, yMin}, {xMax, yMax}} {
+		px, py := c[0]-apexX, apexY-c[1]
+		if ns < 0 {
+			px, py = -px, -py
+		}
+		if math.Abs(math.Atan2(px, py)) > limit {
+			g.singleValued = false
+		}
+	}
+	return g, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -104,6 +104,8 @@ func typeName(v any) string {
 		return "3.1"
 	case Template340:
 		return "3.40"
+	case Template330:
+		return "3.30"
 	}
 	return "?"
 }

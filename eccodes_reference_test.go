@@ -355,7 +355,7 @@ func buildEccodesReference(t *testing.T) map[string]map[string]refField {
 					rf.PV = rf.PV[:f.Section4.NV] // one array per message
 				}
 			}
-			if k == 0 && len(fields) == 1 && coords {
+			if k == 0 && coords {
 				cm := canonicalIndexMap(f, len(vals))
 				for _, q := range nearestQueries {
 					if d, ok := eccodesNearestIndex(t, p, q[0], q[1]); ok && d < len(cm) {

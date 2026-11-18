@@ -110,8 +110,8 @@ func (w BilinearWeights) NearestCorner() int {
 // f.BilinearValue(lat, lon).
 //
 // Supported grids are those BilinearValue supports: regular lat/lon (3.0),
-// rotated lat/lon (3.1) and regular Gaussian (3.40 with Ni set). A Sampler
-// is immutable and safe for concurrent use.
+// rotated lat/lon (3.1), regular Gaussian (3.40 with Ni set) and Lambert
+// conformal (3.30). A Sampler is immutable and safe for concurrent use.
 type Sampler struct {
 	grid    any // Section3.Template the sampler was built from
 	weights func(lat, lon float64) (BilinearWeights, error)
@@ -138,11 +138,18 @@ func gridDims(tmpl GridDefinitionTemplate) (ni, nj int, ok bool) {
 		return int(t.Ni), int(t.Nj), true
 	case Template340:
 		return int(t.Ni), int(t.Nj), true
+	case Template330:
+		return int(t.Nx), int(t.Ny), true
 	}
 	return 0, 0, false
 }
 
-// Weights locates (lat, lon) in degrees on the sampler's grid.
+// Weights locates (lat, lon) in degrees on the sampler's grid. The
+// longitude may be given in any range (-97.5 and 262.5 are the same place).
+//
+// On a Lambert conformal grid it returns an error for the one place the
+// projection cannot put on the map: the pole the cone opens away from (the
+// south pole for a northern hemisphere grid).
 func (s *Sampler) Weights(lat, lon float64) (BilinearWeights, error) {
 	return s.weights(lat, lon)
 }

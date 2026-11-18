@@ -54,8 +54,8 @@ The legacy template numbers 5.40000 and 5.41000 are decoded as 5.40 and 5.41.
 - **Bitmap support** -- automatic expansion of bitmap-masked fields (NaN for missing points), including bit-map indicator 254 (bitmap defined earlier in the message); predefined bitmaps (1-253) return an error
 - **Scanning mode reordering** -- all 16 scanning mode combinations normalized to canonical west-to-east, north-to-south order. For projected grids the first grid point is the first point in data order (WMO); eccodes instead always treats it as the south-west corner, so the two agree for the usual scanning mode 0x40
 - **Grid coordinates** -- `GridCoordinates()` returns lat/lon arrays (longitudes in [0, 360)) for all supported grid types, including projected grids (Lambert on a sphere or oblate spheroid, Polar Stereographic, Mercator, Space View), every shape of the Earth in Code Table 3.2, and the basic angle / subdivisions of Templates 3.0, 3.1 and 3.40. Inconsistent grid descriptions return an error
-- **Nearest-neighbour lookup** -- `NearestValue(lat, lon)` with O(1) direct index computation for regular grids, haversine fallback for others
-- **Bilinear interpolation** -- `BilinearValue(lat, lon)` for smooth value estimation between grid points, across the 0/360 seam on grids that go all the way round
+- **Nearest-neighbour lookup** -- `NearestValue(lat, lon)` with O(1) direct index computation for regular, rotated, regular Gaussian and Lambert conformal grids, haversine search over every point for others
+- **Bilinear interpolation** -- `BilinearValue(lat, lon)` for smooth value estimation between grid points on regular lat/lon, rotated lat/lon, regular Gaussian and Lambert conformal grids (HRRR, NAM), across the 0/360 seam on grids that go all the way round. On a Lambert grid the interpolation is bilinear in the projection plane, where the grid is square
 - **Code table lookups** -- human-readable names for disciplines, centres, parameters, surface types, and all template numbers
 - **Multi-message files** -- `Decoder` reads files containing any number of concatenated GRIB2 messages and fields (messages repeating from Section 2, 3 or 4), skips padding and junk between messages, and skips GRIB1 messages with an `ErrNotEdition2` error. `io.EOF` means a clean end; a cut-off message gives `ErrTruncated`
 - **Byte-perfect round-trips** -- `ReadMessage` followed by `WriteMessage` produces identical bytes
@@ -153,8 +153,11 @@ if !s.Matches(otherField) { /* different grid: build another Sampler */ }
 ```
 
 Measured on a rotated RDPS grid: about 0.2 µs per point, against roughly
-400 µs per `BilinearValue` call. `Weights` reports `Outside` for points
-beyond the grid edge, where the result is clamped to the edge cell.
+400 µs per `BilinearValue` call; `Weights` on HRRR's Lambert grid also
+takes about 0.2 µs. `Weights` reports `Outside` for points beyond the grid
+edge, where the result is clamped to the edge cell. On a Lambert grid it
+returns an error for the one place the projection cannot show: the pole the
+cone opens away from (the south pole for a northern hemisphere grid).
 
 ### Write a GRIB2 file
 
@@ -266,9 +269,9 @@ Message
 |--------|-------------|
 | `Values() ([]float64, error)` | Unpack, apply bitmap, reorder by scanning mode |
 | `GridCoordinates() (lats, lons []float64, error)` | Lat/lon of every grid point in data order |
-| `NearestValue(lat, lon float64)` | Value at closest grid point (O(1) for regular grids) |
+| `NearestValue(lat, lon float64)` | Value at closest grid point (O(1) for regular and Lambert grids) |
 | `BilinearValue(lat, lon float64)` | Bilinear interpolation from 4 surrounding points |
-| `NewSampler(f *Field) (*Sampler, error)` | Reusable bilinear locator for f's grid (3.0, 3.1, regular 3.40) |
+| `NewSampler(f *Field) (*Sampler, error)` | Reusable bilinear locator for f's grid (3.0, 3.1, 3.30, regular 3.40) |
 | `(*Sampler).Weights(lat, lon float64)` | Four corner indices and fractions; apply to any field on the grid |
 | `(BilinearWeights).Interpolate(values)` | Bilinear value, bit-identical to `BilinearValue` |
 | `(BilinearWeights).NearestCorner()` | Index of the heaviest corner, for categorical fields |
@@ -326,6 +329,7 @@ The test suite covers:
 - **Cross-validation against eccodes, with no eccodes needed**: `testdata/upstream/eccodes_reference.json` records what eccodes decodes for every field of every fixture (a fingerprint of every value, sampled points and coordinates, metadata, pv arrays, nearest-point answers), and the golden files in `testdata/upstream/encoded` are our encoders' output as eccodes decoded it (with Jasper and OpenJPEG). Every test runs from these committed files. Developers with eccodes built in `reference/eccodes-install` regenerate them with `GRIB2_WRITE_ECCODES_REFERENCE=1 go test -run TestEccodesReference_Write .`, and `TestEccodesReference_UpToDate` checks they still match eccodes. Fixtures derived from eccodes data and samples are made by `testdata/upstream/generate.sh`; libaec's CCSDS test vectors and golden JPEG2000 streams checked with OpenJPEG and Jasper are in `internal/*/testdata`
 - **Encode/decode round-trips**: pack values, unpack them, verify they match within quantization tolerance
 - **Grid coordinate validation**: lat/lon and their pairing with values compared against eccodes' for every grid type and scanning mode
+- **Lambert lookups against PROJ and real HRRR data**: `testdata/hrrr_cloud.grib2` is six cloud fields of NOAA's HRRR (1799x1059 points, 3 km). `testdata/reference/lambert_proj.json` records where PROJ puts points on every Lambert fixture's grid (`scripts/gen_lambert_reference.py` regenerates it with pyproj and eccodes' `grib_get`); the tests compare `Sampler.Weights` with it, check that every grid point gets the whole weight at its own coordinates, and that the direct `NearestValue` returns exactly what a search over every point returns
 - **Section-level parsing**: individual tests for all section readers and writers (Sections 0-8)
 - **Template coverage**: dedicated tests for all grid, product, and data representation templates
 - **Fuzz testing**: fuzz targets for the message stream (with a rewrite-stability check), each unpacker and their template parameters, the JPEG2000 and AEC codecs
@@ -336,7 +340,7 @@ The test suite covers:
 - **Pure Go, zero CGo** -- no overhead from C interop, straightforward cross-compilation, no system library requirements
 - **Fast paths** for common bit widths (8, 16, 32-bit aligned simple packing)
 - **Streaming decoder** -- reads messages one at a time via `Decoder`, suitable for large multi-message files
-- **O(1) nearest-neighbour** for regular lat/lon and regular Gaussian grids (direct index computation instead of brute-force search)
+- **O(1) nearest-neighbour** for regular lat/lon, rotated lat/lon, regular Gaussian and Lambert conformal grids (direct index computation instead of brute-force search)
 - **Fuzz-tested and hardened** -- safe to use on untrusted input; allocation caps and bounds checks prevent resource exhaustion
 
 ## License

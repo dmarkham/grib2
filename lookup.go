@@ -9,11 +9,11 @@ import (
 // given latitude and longitude (in degrees). Also returns the index,
 // and the actual lat/lon of the nearest point.
 //
-// For regular lat/lon (Template30), rotated lat/lon (Template31) and regular
-// Gaussian grids (Template340 with Ni set) the four points around the target
-// are found directly and the closest by great-circle distance is returned.
-// For all other grid types, a brute-force search over GridCoordinates
-// is performed.
+// For regular lat/lon (Template30), rotated lat/lon (Template31), regular
+// Gaussian (Template340 with Ni set) and Lambert conformal grids
+// (Template330) the four points around the target are found directly and
+// the closest by great-circle distance is returned. For all other grid
+// types, a brute-force search over GridCoordinates is performed.
 func (f *Field) NearestValue(lat, lon float64) (value float64, idx int, nearLat, nearLon float64, err error) {
 	values, err := f.Values()
 	if err != nil {
@@ -54,6 +54,14 @@ func nearestIndex(f *Field, lat, lon float64) (idx int, nearLat, nearLon float64
 			return la, coordNormaliseLon(lo)
 		})
 		return idx, nearLat, nearLon, nil
+	case Template330:
+		g, err := lambertGrid(tmpl)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("grib2: NearestValue: %w", err)
+		}
+		if g.singleValued {
+			return g.nearest(lat, lon)
+		}
 	}
 	return nearestIndexBruteForce(f, lat, lon)
 }
@@ -73,10 +81,13 @@ func isReduced(tmpl GridDefinitionTemplate) bool {
 
 // BilinearValue returns an interpolated value at the given latitude and
 // longitude using bilinear interpolation from the 4 surrounding grid points.
-// Only works for regular grids (Template30, Template31, Template340 regular).
-// On grids that go all the way round in longitude the cell between the last
-// and the first column is interpolated across the 0/360 seam.
-// Returns an error for irregular grids where bilinear interpolation does not
+// It works for regular lat/lon (Template30), rotated lat/lon (Template31),
+// regular Gaussian (Template340 with Ni set) and Lambert conformal
+// (Template330) grids. On grids that go all the way round in longitude the
+// cell between the last and the first column is interpolated across the
+// 0/360 seam. On a Lambert grid the interpolation is bilinear in the
+// projection plane, where the grid is square.
+// Returns an error for other grids, where bilinear interpolation does not
 // apply cleanly.
 func (f *Field) BilinearValue(lat, lon float64) (float64, error) {
 	values, err := f.Values()
@@ -94,8 +105,8 @@ func (f *Field) BilinearValue(lat, lon float64) (float64, error) {
 	return w.Interpolate(values)
 }
 
-// bilinearWeights locates (lat, lon) on a regular, rotated or regular
-// Gaussian grid.
+// bilinearWeights locates (lat, lon) on a regular, rotated, regular
+// Gaussian or Lambert conformal grid.
 func bilinearWeights(tmpl GridDefinitionTemplate) (func(lat, lon float64) (BilinearWeights, error), error) {
 	switch t := tmpl.(type) {
 	case Template30, Template340:
@@ -117,6 +128,12 @@ func bilinearWeights(tmpl GridDefinitionTemplate) (func(lat, lon float64) (Bilin
 			rLat, rLon := coordRotate(lat, lon, angle, spLat, spLon)
 			return g.weights(rLat, rLon)
 		}, nil
+	case Template330:
+		g, err := lambertGrid(t)
+		if err != nil {
+			return nil, err
+		}
+		return g.weights, nil
 	default:
 		return nil, fmt.Errorf("grib2: bilinear interpolation not supported for template %T", tmpl)
 	}
@@ -137,7 +154,13 @@ func nearestIndexBruteForce(f *Field, lat, lon float64) (int, float64, float64, 
 	if len(lats) == 0 {
 		return 0, 0, 0, fmt.Errorf("grib2: NearestValue: grid has no points")
 	}
+	idx := nearestAmong(lats, lons, lat, lon)
+	return idx, lats[idx], lons[idx], nil
+}
 
+// nearestAmong returns the index of the point closest (great circle) to
+// (lat, lon); of several equally close, the first.
+func nearestAmong(lats, lons []float64, lat, lon float64) int {
 	bestIdx := 0
 	bestDist := math.MaxFloat64
 
@@ -151,8 +174,7 @@ func nearestIndexBruteForce(f *Field, lat, lon float64) (int, float64, float64, 
 			bestIdx = i
 		}
 	}
-
-	return bestIdx, lats[bestIdx], lons[bestIdx], nil
+	return bestIdx
 }
 
 // ---------------------------------------------------------------------------

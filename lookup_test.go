@@ -279,32 +279,26 @@ func TestBilinearValue_ReducedGaussianError(t *testing.T) {
 // TestBilinearValue_UnsupportedTemplateError verifies that BilinearValue
 // returns an error for unsupported grid templates.
 func TestBilinearValue_UnsupportedTemplateError(t *testing.T) {
-	field := Field{
-		Section3: Section3{
-			Template: Template330{}, // Lambert conformal
-		},
-	}
-
-	_, err := field.BilinearValue(0, 0)
-	if err == nil {
-		t.Error("BilinearValue should return error for Lambert conformal grids")
+	for _, tmpl := range []GridDefinitionTemplate{Template310{}, Template320{}, Template390{}} {
+		field := Field{Section3: Section3{Template: tmpl}}
+		if _, err := field.BilinearValue(0, 0); err == nil {
+			t.Errorf("BilinearValue should return an error for %T", tmpl)
+		}
 	}
 }
 
-// TestNearestValue_LambertFallback tests that NearestValue works for
-// a Lambert grid using the brute-force fallback via GridCoordinates.
-// Since GridCoordinates is not yet implemented for Lambert, this test
-// verifies the error path gracefully.
-func TestNearestValue_LambertFallback(t *testing.T) {
-	field := Field{
-		Section3: Section3{
-			Template: Template330{},
-		},
+// TestLookup_LambertInvalidGrid: a Lambert grid definition that describes
+// no grid (all zeros) is an error from every lookup, not a panic.
+func TestLookup_LambertInvalidGrid(t *testing.T) {
+	field := Field{Section3: Section3{Template: Template330{}}}
+	if _, _, _, _, err := field.NearestValue(40, -100); err == nil {
+		t.Error("NearestValue accepted an empty Lambert grid definition")
 	}
-
-	_, _, _, _, err := field.NearestValue(40, -100)
-	if err == nil {
-		t.Error("NearestValue on Lambert grid should error (GridCoordinates not yet supported)")
+	if _, err := field.BilinearValue(40, -100); err == nil {
+		t.Error("BilinearValue accepted an empty Lambert grid definition")
+	}
+	if _, err := NewSampler(&field); err == nil {
+		t.Error("NewSampler accepted an empty Lambert grid definition")
 	}
 }
 
